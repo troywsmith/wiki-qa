@@ -49,12 +49,8 @@ class WikipediaClient:
             results.append({"title": title, "snippet": snippet, "url": _page_url(self.lang, title)})
         return results
 
-    async def get_article(self, title: str, max_chars: int = 12000) -> dict[str, str]:
-        """Return {title, extract, url} for an article's plain-text body.
-
-        Pulls the full plain-text extract (not just the lead) and truncates client
-        side, so body-section facts are in what the agent can ground on. NOTE: the
-        extracts API returns prose only — infobox tables are never included."""
+    async def get_article(self, title: str, max_chars: int = 4000) -> dict[str, str]:
+        """Return {title, extract, url} for an article's plain-text intro/body."""
         data = await self._get(
             {
                 "action": "query",
@@ -62,6 +58,7 @@ class WikipediaClient:
                 "titles": title,
                 "explaintext": 1,
                 "redirects": 1,
+                "exchars": max_chars,
             }
         )
         pages = data.get("query", {}).get("pages", {})
@@ -71,7 +68,7 @@ class WikipediaClient:
             resolved = page.get("title", title)
             return {
                 "title": resolved,
-                "extract": page.get("extract", "").strip()[:max_chars],
+                "extract": page.get("extract", "").strip(),
                 "url": _page_url(self.lang, resolved),
             }
         return {"title": title, "extract": "", "url": _page_url(self.lang, title)}

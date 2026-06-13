@@ -256,7 +256,9 @@ returns at any prose depth — so faithfulness on those didn't climb. Meanwhile 
 fuller prose invited more claims (some ungrounded) and pushed two abstaining
 tasks into answering-and-failing: faithfulness 17/30 → 16/32, tasks-pass 22 → 18.
 Takeaway: prose depth is the wrong lever for infobox facts — the next attempt
-should fetch structured/infobox data, not more prose.
+should fetch structured/infobox data, not more prose. **Reverted** after this row
+(housekeeping, not re-scored): retrieval restored to the post-step-1 4k lead, so
+step 3 builds from the step-1 base and its delta stays clean.
 
 **Held-out** — run once, at the end, as an overfitting check: _TBD._
 
