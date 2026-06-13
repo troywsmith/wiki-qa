@@ -25,6 +25,9 @@ from . import graders
 console = Console()
 DEFAULT_SUITE = Path(__file__).parent / "suite.jsonl"
 
+# Task categories — each probes a distinct way a grounded QA agent fails.
+CATEGORIES = ("factual", "multi_hop", "disambiguation", "unanswerable", "adversarial")
+
 
 def load_suite(path: Path) -> list[dict[str, Any]]:
     """Load the evaluation suite — a list of tasks, one JSON object per line."""
@@ -65,6 +68,7 @@ async def run_task(agent: Agent, model: str, task: dict[str, Any]) -> dict[str, 
         }
     return {
         "task_id": task["id"],
+        "category": task.get("category", "uncategorized"),
         "outcome": outcome,
         "trial": {"steps": result["steps"], "context_chars": len(context)},
         "grades": {
@@ -89,25 +93,40 @@ def _mean(values: list[float | None]) -> float | None:
     return sum(nums) / len(nums) if nums else None
 
 
+def _faithfulness_rate(records: list[dict[str, Any]]) -> tuple[int, int]:
+    """(# grounded, # gradable) for faithfulness over the given records."""
+    graded = [r for r in records if r["grades"]["faithfulness"] is not None]
+    grounded = sum(1 for r in graded if r["grades"]["faithfulness"] >= 0.999)
+    return grounded, len(graded)
+
+
 def report(records: list[dict[str, Any]]) -> None:
     table = Table(title="wiki-qa eval suite", title_style="bold")
     table.add_column("task")
+    table.add_column("category")
     for col in ("recall", "citation", "faithfulness", "refusal"):
         table.add_column(col, justify="right")
     table.add_column("steps", justify="right")
     for r in records:
         g = r["grades"]
         table.add_row(
-            r["task_id"], _fmt(g["recall"]), _fmt(g["citation"]), _fmt(g["faithfulness"]), _fmt(g["refusal"]),
-            str(r["trial"]["steps"]),
+            r["task_id"], r["category"], _fmt(g["recall"]), _fmt(g["citation"]), _fmt(g["faithfulness"]),
+            _fmt(g["refusal"]), str(r["trial"]["steps"]),
         )
     console.print(table)
 
     # Headline: faithfulness is the north-star metric.
-    graded = [r for r in records if r["grades"]["faithfulness"] is not None]
-    grounded = sum(1 for r in graded if r["grades"]["faithfulness"] >= 0.999)
-    rate = _fmt(grounded / len(graded)) if graded else "[dim]n/a[/dim]"
-    console.print(f"\n[bold]★ faithfulness: {grounded}/{len(graded)} grounded[/bold]  ({rate})")
+    grounded, gradable = _faithfulness_rate(records)
+    rate = _fmt(grounded / gradable) if gradable else "[dim]n/a[/dim]"
+    console.print(f"\n[bold]★ faithfulness: {grounded}/{gradable} grounded[/bold]  ({rate})")
+
+    # Per-category faithfulness breakdown.
+    by_category = {cat: [r for r in records if r["category"] == cat] for cat in {r["category"] for r in records}}
+    console.print("[dim]by category (faithfulness):[/dim]")
+    for cat in sorted(by_category):
+        g, n = _faithfulness_rate(by_category[cat])
+        rate = _fmt(g / n) if n else "[dim]n/a[/dim]"
+        console.print(f"  {cat:16s} {g}/{n} {rate}")
 
     console.print("[dim]secondary graders:[/dim]")
     for grader in ("recall", "citation", "refusal"):
@@ -128,6 +147,16 @@ async def main_async(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
     tasks = load_suite(Path(args.suite))
+
+    unknown = {t.get("category", "uncategorized") for t in tasks} - set(CATEGORIES)
+    if unknown:
+        console.print(f"[yellow]warning: tasks use unknown categories: {sorted(unknown)}[/yellow]")
+    if args.category:
+        tasks = [t for t in tasks if t.get("category") == args.category]
+        if not tasks:
+            console.print(f"[red]no tasks in category '{args.category}'.[/red]")
+            raise SystemExit(1)
+
     agent = Agent(settings)
     records: list[dict[str, Any]] = []
     with console.status(f"[bold]running {len(tasks)} task(s)…[/bold]", spinner="dots"):
@@ -144,6 +173,7 @@ async def main_async(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(prog="evals", description="Run the wiki-qa evaluation suite.")
     parser.add_argument("--suite", default=str(DEFAULT_SUITE), help="Path to a .jsonl suite of tasks.")
+    parser.add_argument("--category", choices=CATEGORIES, help="Only run tasks in this category.")
     parser.add_argument("--json", help="Optional path to write full records as JSON.")
     asyncio.run(main_async(parser.parse_args()))
 

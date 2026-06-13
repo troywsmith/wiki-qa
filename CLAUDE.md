@@ -53,6 +53,9 @@ Request flow: `main.py` (HTTP) → `agent.py` (the tool loop) → `wikipedia.py`
 The `evals/` package follows Anthropic's eval nomenclature
 (https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents):
 - **`evals/suite.jsonl`** — the **suite**: one **task** (JSON object) per line.
+  Each task has a `category` (one of `CATEGORIES` in `harness.py`: factual,
+  multi_hop, disambiguation, unanswerable, adversarial); the report breaks
+  faithfulness down per category and `--category` filters to one.
 - **`evals/graders.py`** — **code-based graders** (recall, citation, refusal) and
   one **model-based grader** (faithfulness, LLM-as-judge against a rubric).
 - **`evals/harness.py`** — runs each task as a **trial**, captures the

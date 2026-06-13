@@ -70,11 +70,21 @@ Wikipedia + Claude) and needs an API key.
 
 ```bash
 python -m evals.harness                       # run evals/suite.jsonl
+python -m evals.harness --category adversarial # run one category
 python -m evals.harness --suite my.jsonl --json records.json
 ```
 
-Each task line: `{"id", "question", "key_facts": [...],
+Each task line: `{"id", "category", "question", "key_facts": [...],
 "expected_sources": [...], "should_refuse": bool}`.
+
+Tasks are grouped into **categories**, each probing a distinct failure mode; the
+report breaks faithfulness down per category:
+
+- `factual` — single fact, one article (baseline competence)
+- `multi_hop` — answer needs 2+ articles combined (retrieval + synthesis)
+- `disambiguation` — ambiguous entity/sense (retrieval precision)
+- `unanswerable` — not on Wikipedia / private / future (honesty, correct refusal)
+- `adversarial` — false-premise or bait questions (hallucination resistance)
 
 ## Deploy (Vercel)
 

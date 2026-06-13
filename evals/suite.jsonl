@@ -1,4 +1,4 @@
-{"id": "compiler-author", "question": "Who designed the first compiler?", "key_facts": ["Grace Hopper"], "expected_sources": ["A-0 System"], "should_refuse": false}
-{"id": "capital-australia", "question": "What is the capital of Australia?", "key_facts": ["Canberra"], "expected_sources": ["Canberra"], "should_refuse": false}
-{"id": "photosynthesis-output", "question": "What gas do plants release during photosynthesis?", "key_facts": ["oxygen"], "expected_sources": [], "should_refuse": false}
-{"id": "unanswerable-private", "question": "What did my next-door neighbour eat for breakfast on 3 March 2019?", "key_facts": [], "expected_sources": [], "should_refuse": true}
+{"id": "compiler-author", "category": "factual", "question": "Who designed the first compiler?", "key_facts": ["Grace Hopper"], "expected_sources": ["A-0 System"], "should_refuse": false}
+{"id": "capital-australia", "category": "factual", "question": "What is the capital of Australia?", "key_facts": ["Canberra"], "expected_sources": ["Canberra"], "should_refuse": false}
+{"id": "photosynthesis-output", "category": "factual", "question": "What gas do plants release during photosynthesis?", "key_facts": ["oxygen"], "expected_sources": [], "should_refuse": false}
+{"id": "unanswerable-private", "category": "unanswerable", "question": "What did my next-door neighbour eat for breakfast on 3 March 2019?", "key_facts": [], "expected_sources": [], "should_refuse": true}
