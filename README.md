@@ -233,6 +233,7 @@ with real retrieval while holding correctness/completeness.
 | 2026-06-13 | force read-before-answer | prompt | 17/30 | 25/26 | 29/30 | 22/25 | 31/32 |
 | 2026-06-13 | recalibrate attribution: any-of for non-multi_hop | grader | 17/30 | 25/26 | 29/30 | 23/25 | 31/32 |
 | 2026-06-13 | retrieve fuller article text | retrieval | 16/32 | 26/26 | 32/32 | 21/26 | 31/32 |
+| 2026-06-13 | tighten over-claim (assert only fetched text) | prompt | 17/29 | 24/26 | 27/28 | 21/24 | 30/32 |
 
 Step 1 (prompt) vs baseline: faithfulness 0/32 → 17/30 and attribution 0/26 →
 22/25 (off zero — the agent now fetches before answering); calibration 28/32 →
@@ -259,6 +260,20 @@ Takeaway: prose depth is the wrong lever for infobox facts — the next attempt
 should fetch structured/infobox data, not more prose. **Reverted** after this row
 (housekeeping, not re-scored): retrieval restored to the post-step-1 4k lead, so
 step 3 builds from the step-1 base and its delta stays clean.
+
+Step 3 (prompt) — narrow win, flat headline. The lever fixed the elaboration
+over-claims it targeted: `mercury-roman-god` and `turkey-country-continents`
+went fail→pass on faithfulness (no more Hermes/Jupiter/extra-fact asides), and
+`iron-melting-point` now honestly abstains (faithfulness N/A, completeness fail —
+the intended retrieval_gap behavior, not a regression). But the headline is flat
+(faithfulness 17/30 → 17/29): `tallest-mountain` and `injection-france-capital`
+flipped pass→fail, which the prompt change shouldn't cause — that's **single-trial
+variance** (temperature is pinned 0 in the protocol but not yet enforced on the
+API calls, so the agent runs at default temp). The other ±1 dimension moves are
+within the same noise. `retrieval_gap` mostly still asserts infobox values from
+memory (`saturn-axial-tilt` 0.0). **Before trusting more small levers, enforce
+temperature 0 (and/or add multi-trial) so a ±2 delta isn't noise** — and
+`retrieval_gap` still needs infobox retrieval.
 
 **Held-out** — run once, at the end, as an overfitting check: _TBD._
 
