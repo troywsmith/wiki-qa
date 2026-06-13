@@ -1,8 +1,8 @@
-"""Scorers for the eval suite.
+"""Graders for the evaluation suite.
 
-Three deterministic checks (recall, citation, refusal) plus one LLM-as-judge
-check (faithfulness). Each returns a float in [0, 1] or None when not applicable
-to a given case.
+Three code-based graders (recall, citation, refusal) plus one model-based grader
+(faithfulness, LLM-as-judge against a rubric). Each returns a float in [0, 1], or
+None when the grader does not apply to a given task.
 """
 
 from __future__ import annotations
@@ -26,6 +26,9 @@ _REFUSAL_MARKERS = (
     "cannot answer",
     "can't answer",
 )
+
+
+# --- Code-based graders (deterministic) ---
 
 
 def keyword_recall(answer: str, key_facts: list[str]) -> float | None:
@@ -55,7 +58,10 @@ def refusal_correct(answer: str, should_refuse: bool) -> float:
     return 1.0 if looks_like_refusal(answer) == should_refuse else 0.0
 
 
-_JUDGE_PROMPT = """You grade whether an ANSWER is fully supported by SOURCE TEXT \
+# --- Model-based grader (LLM-as-judge) ---
+
+# Rubric for the faithfulness grader.
+_RUBRIC = """You grade whether an ANSWER is fully supported by SOURCE TEXT \
 retrieved from Wikipedia. Do not use outside knowledge — judge only against the source.
 
 SOURCE TEXT:
@@ -79,7 +85,7 @@ async def faithfulness_judge(
     resp = await client.messages.create(
         model=model,
         max_tokens=500,
-        messages=[{"role": "user", "content": _JUDGE_PROMPT.format(context=context[:12000], answer=answer)}],
+        messages=[{"role": "user", "content": _RUBRIC.format(context=context[:12000], answer=answer)}],
     )
     raw = "".join(b.text for b in resp.content if b.type == "text").strip()
     try:

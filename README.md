@@ -55,19 +55,25 @@ pytest tests/test_wikipedia.py::test_search_parses_hits
 
 ## Evals
 
-A standalone suite that runs the agent over a dataset and scores it. The
-**north-star metric is faithfulness** — is every claim in the answer supported
-by the Wikipedia text the agent actually retrieved? An answer given with no
-retrieved source text scores 0 (ungrounded), not a pass. Recall, citation, and
-refusal are secondary checks. Faithfulness is graded by an LLM judge; the rest
-are deterministic. Runs live (real Wikipedia + Claude) and needs an API key.
+Terminology follows Anthropic's
+[Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents):
+the **harness** runs each **task** in the **suite** as a **trial**, captures the
+**transcript** (the Wikipedia text the agent retrieved + its **outcome**), and
+applies **graders**.
+
+The **north-star metric is faithfulness** — is every claim in the outcome
+supported by the text the agent actually retrieved? An answer given with no
+retrieved source text grades 0 (ungrounded), not a pass. Recall, citation, and
+refusal are secondary. Faithfulness uses a **model-based grader** (LLM-as-judge
+against a rubric); the rest are **code-based graders**. Runs live (real
+Wikipedia + Claude) and needs an API key.
 
 ```bash
-python -m evals.runner                       # run evals/dataset.jsonl
-python -m evals.runner --dataset my.jsonl --json results.json
+python -m evals.harness                       # run evals/suite.jsonl
+python -m evals.harness --suite my.jsonl --json records.json
 ```
 
-Each dataset line: `{"id", "question", "key_facts": [...],
+Each task line: `{"id", "question", "key_facts": [...],
 "expected_sources": [...], "should_refuse": bool}`.
 
 ## Deploy (Vercel)

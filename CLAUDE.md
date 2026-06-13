@@ -15,11 +15,14 @@ All commands assume the venv is active (`source .venv/bin/activate`).
 ```bash
 pip install -e ".[dev]"                              # install runtime + dev deps
 uvicorn wikiqa.main:app --reload                     # run dev server (localhost:8000)
+wiki-qa -v "a question"                              # in-process CLI, streams tool calls
 pytest                                               # run all tests
 pytest tests/test_wikipedia.py::test_search_parses_hits  # run a single test
+python -m evals.harness                              # run the eval suite (live; needs API key)
 ```
 
 Tests mock all HTTP with `respx` — they never hit the network or need an API key.
+The eval harness, by contrast, runs live against real Wikipedia + Claude.
 
 ## Architecture
 
@@ -41,6 +44,24 @@ Request flow: `main.py` (HTTP) → `agent.py` (the tool loop) → `wikipedia.py`
   they're matched by string.
 - **`wikiqa/config.py`** — `Settings` (pydantic-settings). All env vars are
   prefixed `WIKIQA_`. `get_settings()` is `lru_cache`d.
+- **`wikiqa/cli.py`** — terminal client (`wiki-qa` entry point). Calls `Agent`
+  in-process and uses the optional `on_event` callback on `Agent.answer` to
+  stream tool calls. The agent stays decoupled — no `rich` import in `agent.py`.
+
+### Evals
+
+The `evals/` package follows Anthropic's eval nomenclature
+(https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents):
+- **`evals/suite.jsonl`** — the **suite**: one **task** (JSON object) per line.
+- **`evals/graders.py`** — **code-based graders** (recall, citation, refusal) and
+  one **model-based grader** (faithfulness, LLM-as-judge against a rubric).
+- **`evals/harness.py`** — runs each task as a **trial**, captures the
+  **transcript**/**outcome** via the agent's `on_event` hook, grades, reports.
+
+**Faithfulness is the north-star metric**, graded strictly against the text the
+agent actually retrieved; an outcome with no retrieved source text grades 0.
+Keep this vocabulary (task/trial/grader/transcript/outcome/suite/harness) when
+extending evals.
 
 ### Grounding contract
 
