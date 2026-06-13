@@ -45,7 +45,9 @@ RUNS_DIR = HERE / "runs"
 
 CATEGORIES = ("factual", "multi_hop", "disambiguation", "unanswerable", "adversarial", "retrieval_gap", "injection")
 DIMENSIONS = ("faithfulness", "completeness", "correctness", "attribution", "calibration")
-PINNED_TEMPERATURE = 0  # protocol value recorded in meta; not yet enforced on the API calls
+# Temperature can't be pinned: it's deprecated/rejected by these models (sonnet-4-6,
+# opus-4-8). Determinism comes from multi-trial majority (--trials), not temperature.
+TEMPERATURE_NOTE = "unset (deprecated for model); determinism via trials"
 
 # The no-retrieval baseline prompt: the real agent system prompt with the tool /
 # retrieval / citation clauses stripped, the role + task framing + answer-or-refusal
@@ -110,7 +112,7 @@ def _make_agent(settings: Any, task: dict[str, Any], baseline: bool = False) -> 
     return Agent(settings)
 
 
-async def run_task(settings: Any, task: dict[str, Any], baseline: bool = False) -> dict[str, Any]:
+async def run_task(settings: Any, task: dict[str, Any], baseline: bool = False, trial: int = 0) -> dict[str, Any]:
     """Run the agent once and return an immutable record of what happened."""
     chunks: list[str] = []
     trace: list[dict[str, Any]] = []
@@ -129,7 +131,7 @@ async def run_task(settings: Any, task: dict[str, Any], baseline: bool = False) 
     result = await _make_agent(settings, task, baseline).answer(task["question"], on_event=on_event)
     return {
         "task_id": task["id"],
-        "trial": 0,  # single trial for now; pass@k will add trials without changing this shape
+        "trial": trial,
         "category": task.get("category", "uncategorized"),
         "question": task["question"],
         "dimensions": task.get("dimensions", []),
@@ -167,8 +169,8 @@ async def run_phase(settings: Any, tasks: list[dict[str, Any]], suite_path: Path
         "protocol": {
             "answerer": settings.model,
             "judge": settings.judge_model,
-            "temperature": PINNED_TEMPERATURE,
-            "trials": 1,
+            "temperature": TEMPERATURE_NOTE,
+            "trials": args.trials,
         },
         "partial": partial,  # True if sliced/holdout — excluded from the comparison table
         "kind": "scratch" if partial else ("baseline" if args.baseline else args.kind),
@@ -180,10 +182,11 @@ async def run_phase(settings: Any, tasks: list[dict[str, Any]], suite_path: Path
     (run_dir / "meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False))
 
     records: list[dict[str, Any]] = []
-    with console.status(f"[bold]running {len(tasks)} task(s)…[/bold]", spinner="dots"):
+    with console.status(f"[bold]running {len(tasks)} task(s) × {args.trials} trial(s)…[/bold]", spinner="dots"):
         for task in tasks:
-            records.append(await run_task(settings, task, baseline=args.baseline))
-            console.print(f"[dim]✓ ran {task['id']}[/dim]")
+            for t in range(args.trials):
+                records.append(await run_task(settings, task, baseline=args.baseline, trial=t))
+            console.print(f"[dim]✓ ran {task['id']} ×{args.trials}[/dim]")
     (run_dir / "records.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n")
     console.print(f"[dim]wrote {len(records)} records → {run_dir}[/dim]")
     return run_dir
@@ -312,8 +315,38 @@ def _scratch_banner(run_dir: Path) -> None:
         console.print("\n[bold yellow]⚠ PARTIAL / SCRATCH run — tuning only. Do NOT log these numbers as a row; only a full frozen dev-suite run produces a real row.[/bold yellow]")
 
 
+def _aggregate_trials(scored: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse per-(task,trial) records to one entry per task by majority vote, so
+    a single-trial flip reads as noise. Single-trial input aggregates trivially."""
+    from collections import defaultdict
+
+    by_task: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for s in scored:
+        by_task[s["task_id"]].append(s)
+    agg = []
+    for tid, trials in by_task.items():
+        grades: dict[str, Any] = {}
+        for d in DIMENSIONS:
+            ap = [t for t in trials if t["grades"].get(d, {}).get("applicable")]
+            if not ap:
+                grades[d] = {"applicable": False, "pass": None}
+            else:
+                npass = sum(1 for t in ap if t["grades"][d]["pass"])
+                grades[d] = {"applicable": True, "pass": npass * 2 >= len(ap), "pass_rate": round(npass / len(ap), 2), "trials": len(ap)}
+        injs = [t["injection_check"] for t in trials]
+        ia = [i for i in injs if i.get("applicable")]
+        inj = {"applicable": bool(ia), "pass": (sum(1 for i in ia if i["pass"]) * 2 >= len(ia)) if ia else None, "found": any(i.get("found") for i in injs)}
+        tp = sum(1 for t in trials if t["task_pass"]) * 2 >= len(trials)
+        agg.append({"task_id": tid, "category": trials[0]["category"], "grades": grades, "injection_check": inj, "task_pass": tp, "n_trials": len(trials)})
+    return agg
+
+
 def report(scored: list[dict[str, Any]]) -> None:
+    n_trials = max((s.get("trial", 0) for s in scored), default=0) + 1
+    scored = _aggregate_trials(scored)
     cats = sorted({s["category"] for s in scored}, key=lambda c: CATEGORIES.index(c) if c in CATEGORIES else 99)
+    if n_trials > 1:
+        console.print(f"[dim]aggregated over {n_trials} trials per task (majority vote)[/dim]")
 
     table = Table(title="wiki-qa eval — per-category / per-dimension pass rates", title_style="bold")
     table.add_column("category")
@@ -391,6 +424,7 @@ def main() -> None:
     parser.add_argument("--suite", default=str(DEFAULT_SUITE), help="Dev suite path (run).")
     parser.add_argument("--holdout", action="store_true", help="Use the held-out slice (only at the very end).")
     parser.add_argument("--baseline", action="store_true", help="No-retrieval floor: stripped prompt, no tools. Run once.")
+    parser.add_argument("--trials", type=int, default=1, help="Run each task N times; the report aggregates by majority across trials.")
     parser.add_argument("--category", choices=CATEGORIES, help="Only run tasks in this category (marks the run scratch).")
     parser.add_argument("--task", help="Comma-separated task id(s) to run a slice (marks the run scratch).")
     parser.add_argument("--run", help="Run dir to score (default: latest under evals/runs/).")
