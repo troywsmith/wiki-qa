@@ -61,12 +61,21 @@ the **harness** runs each **task** in the **suite** as a **trial**, captures the
 **transcript** (the Wikipedia text the agent retrieved + its **outcome**), and
 applies **graders**.
 
-The **north-star metric is faithfulness** — is every claim in the outcome
-supported by the text the agent actually retrieved? An answer given with no
-retrieved source text grades 0 (ungrounded), not a pass. Recall, citation, and
-refusal are secondary. Faithfulness uses a **model-based grader** (LLM-as-judge
-against a rubric); the rest are **code-based graders**. Runs live (real
-Wikipedia + Claude) and needs an API key.
+Each task is graded along the **quality dimensions** it declares. **Faithfulness
+is the north star** — is every claim in the outcome supported by the text the
+agent actually retrieved? An answer given with no retrieved source text grades 0
+(ungrounded), not a pass. The five dimensions:
+
+- **faithfulness** — claims supported by *retrieved* text (model-based, vs context)
+- **correctness** — outcome asserts nothing contradicting the reference (precision)
+- **completeness** — outcome covers the reference's key info (recall); a refusal
+  scores 0 here, which is how `retrieval_gap` surfaces
+- **attribution** — expected source articles were cited (code-based)
+- **calibration** — refuses iff it should (code-based)
+
+correctness + completeness come from one **reference-based** judge call against
+the task's `reference_answer`. Runs live (real Wikipedia + Claude); needs an API
+key.
 
 ```bash
 python -m evals.harness                       # run evals/suite.jsonl
@@ -74,8 +83,10 @@ python -m evals.harness --category adversarial # run one category
 python -m evals.harness --suite my.jsonl --json records.json
 ```
 
-Each task line: `{"id", "category", "question", "key_facts": [...],
-"expected_sources": [...], "should_refuse": bool}`.
+Each task line: `{"id", "category", "question", "dimensions": [...],
+"reference_answer": "...", "expected_sources": [...], "should_refuse": bool}`.
+A task is only graded on the dimensions it lists; `reference_answer` is required
+for `correctness`/`completeness`.
 
 Tasks are grouped into **categories**, each probing a distinct failure mode; the
 report breaks faithfulness down per category:

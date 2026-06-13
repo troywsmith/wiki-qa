@@ -58,15 +58,19 @@ The `evals/` package follows Anthropic's eval nomenclature
   report breaks faithfulness down per category and `--category` filters to one.
   `retrieval_gap` (answer on Wikipedia but outside the agent's extract) is where
   faithfulness and completeness diverge — its grading is a phase-2 concern.
-- **`evals/graders.py`** — **code-based graders** (recall, citation, refusal) and
-  one **model-based grader** (faithfulness, LLM-as-judge against a rubric).
+- **`evals/graders.py`** — **code-based graders** (citation→attribution,
+  refusal→calibration) and **model-based graders** (faithfulness vs retrieved
+  context; reference_judge vs `reference_answer` → correctness + completeness).
 - **`evals/harness.py`** — runs each task as a **trial**, captures the
   **transcript**/**outcome** via the agent's `on_event` hook, grades, reports.
 
-**Faithfulness is the north-star metric**, graded strictly against the text the
-agent actually retrieved; an outcome with no retrieved source text grades 0.
-Keep this vocabulary (task/trial/grader/transcript/outcome/suite/harness) when
-extending evals.
+**Quality dimensions** (`DIMENSIONS` in `harness.py`): faithfulness (north star),
+completeness, correctness, attribution, calibration. Each task declares which
+apply via its `dimensions` field; only those are graded. correctness/completeness
+are a precision/recall split vs the reference (`reference_answer` required for
+them). Faithfulness is graded strictly against retrieved text — an outcome with
+no retrieved source text grades 0. Keep the shared vocabulary
+(task/trial/grader/transcript/outcome/suite/harness/dimension) when extending.
 
 ### Grounding contract
 

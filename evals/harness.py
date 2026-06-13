@@ -30,6 +30,11 @@ DEFAULT_SUITE = Path(__file__).parent / "suite.jsonl"
 # pulled — faithfulness and completeness diverge here (see evals docs / phase 2).
 CATEGORIES = ("factual", "multi_hop", "disambiguation", "unanswerable", "adversarial", "retrieval_gap")
 
+# Quality dimensions — the axes a task can be graded on. Each task declares which
+# of these apply (the `dimensions` field). Faithfulness is the north star.
+DIMENSIONS = ("faithfulness", "completeness", "correctness", "attribution", "calibration")
+_REFERENCE_DIMS = ("correctness", "completeness")  # graded together vs reference_answer
+
 
 def load_suite(path: Path) -> list[dict[str, Any]]:
     """Load the evaluation suite — a list of tasks, one JSON object per line."""
@@ -53,33 +58,46 @@ async def run_task(agent: Agent, model: str, task: dict[str, Any]) -> dict[str, 
     outcome = result["answer"]
     context = "\n\n".join(context_chunks)
 
-    faithfulness = await graders.faithfulness_judge(agent.client, model, outcome, context)
-    # North-star rule: a substantive answer backed by no retrieved source text is
-    # ungrounded by definition — grade it 0, not n/a. (A correct refusal stays n/a.)
-    if (
-        faithfulness["score"] is None
-        and not context.strip()
-        and not task.get("should_refuse", False)
-        and not graders.looks_like_refusal(outcome)
-    ):
-        faithfulness = {
-            "score": 0.0,
-            "grounded": False,
-            "unsupported_claims": [],
-            "reason": "answered without retrieving any article text",
-        }
+    declared = set(task.get("dimensions", []))
+    grades: dict[str, float | None] = {dim: None for dim in DIMENSIONS}
+    details: dict[str, Any] = {}
+
+    if "faithfulness" in declared:
+        faithfulness = await graders.faithfulness_judge(agent.client, model, outcome, context)
+        # North-star rule: a substantive answer backed by no retrieved source text is
+        # ungrounded by definition — grade it 0, not n/a. (A correct refusal stays n/a.)
+        if (
+            faithfulness["score"] is None
+            and not context.strip()
+            and not task.get("should_refuse", False)
+            and not graders.looks_like_refusal(outcome)
+        ):
+            faithfulness = {"score": 0.0, "grounded": False, "unsupported_claims": [],
+                            "reason": "answered without retrieving any article text"}
+        grades["faithfulness"] = faithfulness["score"]
+        details["faithfulness"] = faithfulness
+
+    if "attribution" in declared:
+        grades["attribution"] = graders.citation_match(
+            [s["title"] for s in result["sources"]], task.get("expected_sources", [])
+        )
+    if "calibration" in declared:
+        grades["calibration"] = graders.refusal_correct(outcome, task.get("should_refuse", False))
+
+    if declared.intersection(_REFERENCE_DIMS) and task.get("reference_answer"):
+        ref = await graders.reference_judge(agent.client, model, outcome, task["reference_answer"])
+        details["reference"] = ref
+        for dim in _REFERENCE_DIMS:
+            if dim in declared:
+                grades[dim] = ref[dim]
+
     return {
         "task_id": task["id"],
         "category": task.get("category", "uncategorized"),
         "outcome": outcome,
         "trial": {"steps": result["steps"], "context_chars": len(context)},
-        "grades": {
-            "recall": graders.keyword_recall(outcome, task.get("key_facts", [])),
-            "citation": graders.citation_match([s["title"] for s in result["sources"]], task.get("expected_sources", [])),
-            "refusal": graders.refusal_correct(outcome, task.get("should_refuse", False)),
-            "faithfulness": faithfulness["score"],
-        },
-        "faithfulness_detail": faithfulness,
+        "grades": grades,
+        "details": details,
     }
 
 
@@ -102,18 +120,26 @@ def _faithfulness_rate(records: list[dict[str, Any]]) -> tuple[int, int]:
     return grounded, len(graded)
 
 
+_DIM_HEADERS = {
+    "faithfulness": "faith",
+    "completeness": "complete",
+    "correctness": "correct",
+    "attribution": "attrib",
+    "calibration": "calib",
+}
+
+
 def report(records: list[dict[str, Any]]) -> None:
     table = Table(title="wiki-qa eval suite", title_style="bold")
     table.add_column("task")
     table.add_column("category")
-    for col in ("recall", "citation", "faithfulness", "refusal"):
-        table.add_column(col, justify="right")
+    for dim in DIMENSIONS:
+        table.add_column(_DIM_HEADERS[dim], justify="right")
     table.add_column("steps", justify="right")
     for r in records:
         g = r["grades"]
         table.add_row(
-            r["task_id"], r["category"], _fmt(g["recall"]), _fmt(g["citation"]), _fmt(g["faithfulness"]),
-            _fmt(g["refusal"]), str(r["trial"]["steps"]),
+            r["task_id"], r["category"], *[_fmt(g[dim]) for dim in DIMENSIONS], str(r["trial"]["steps"])
         )
     console.print(table)
 
@@ -130,16 +156,25 @@ def report(records: list[dict[str, Any]]) -> None:
         rate = _fmt(g / n) if n else "[dim]n/a[/dim]"
         console.print(f"  {cat:16s} {g}/{n} {rate}")
 
-    console.print("[dim]secondary graders:[/dim]")
-    for grader in ("recall", "citation", "refusal"):
-        avg = _mean([r["grades"][grader] for r in records])
-        console.print(f"  {grader:14s} {_fmt(avg)}")
+    console.print("[dim]dimension averages:[/dim]")
+    for dim in DIMENSIONS:
+        avg = _mean([r["grades"][dim] for r in records])
+        console.print(f"  {dim:14s} {_fmt(avg)}")
 
-    failures = [(r["task_id"], r["faithfulness_detail"]) for r in records if r["grades"]["faithfulness"] == 0.0]
-    if failures:
-        console.print("\n[bold red]Ungrounded outcomes:[/bold red]")
-        for task_id, detail in failures:
-            console.print(f"  [red]{task_id}[/red]: {detail.get('reason', '')}")
+    _print_failures(records)
+
+
+def _print_failures(records: list[dict[str, Any]]) -> None:
+    for r in records:
+        notes = []
+        fa = r["details"].get("faithfulness")
+        if r["grades"]["faithfulness"] == 0.0 and fa:
+            notes.append(f"ungrounded — {fa.get('reason', '')}")
+        ref = r["details"].get("reference")
+        if ref and ((r["grades"]["correctness"] or 1) < 0.999 or (r["grades"]["completeness"] or 1) < 0.999):
+            notes.append(f"vs reference — {ref.get('reason', '')}")
+        if notes:
+            console.print(f"[red]{r['task_id']}[/red]: " + "; ".join(notes))
 
 
 async def main_async(args: argparse.Namespace) -> None:
@@ -153,6 +188,13 @@ async def main_async(args: argparse.Namespace) -> None:
     unknown = {t.get("category", "uncategorized") for t in tasks} - set(CATEGORIES)
     if unknown:
         console.print(f"[yellow]warning: tasks use unknown categories: {sorted(unknown)}[/yellow]")
+    unknown_dims = {d for t in tasks for d in t.get("dimensions", [])} - set(DIMENSIONS)
+    if unknown_dims:
+        console.print(f"[yellow]warning: tasks declare unknown dimensions: {sorted(unknown_dims)}[/yellow]")
+    for t in tasks:
+        needs_ref = set(t.get("dimensions", [])).intersection(_REFERENCE_DIMS)
+        if needs_ref and not t.get("reference_answer"):
+            console.print(f"[yellow]warning: task '{t['id']}' declares {sorted(needs_ref)} but has no reference_answer[/yellow]")
     if args.category:
         tasks = [t for t in tasks if t.get("category") == args.category]
         if not tasks:
