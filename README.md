@@ -197,7 +197,7 @@ faithfulness fails (right answer, ungrounded).
 Pinned at freeze so baseline, climb, and held-out numbers stay comparable:
 
 - **Answerer**: `claude-sonnet-4-6` (mid-tier — keeps grounding failures visible).
-- **Judge**: `claude-opus-4-7` (stronger, and different from the answerer — decorrelates self-preference).
+- **Judge**: `claude-opus-4-8` (stronger, and different from the answerer — decorrelates self-preference).
 - **Temperature**: 0.
 - **Trials**: 1 per task at freeze.
 
@@ -211,7 +211,9 @@ recorded. `kind` marks each row — grader-change rows recalibrate the instrumen
 so scores are not directly comparable across them.
 
 **Baseline** — no-retrieval reference (agent answers from memory, Wikipedia
-disabled): _TBD (run once the suite is frozen)._
+disabled). Faithfulness is **0 by definition** here: with no retrieved text,
+nothing can be supported. The baseline exists to show what the other dimensions
+look like ungrounded. _TBD (run once the suite is frozen)._
 
 | date | change | kind | faithfulness | completeness | correctness | attribution | calibration |
 |------|--------|------|--------------|--------------|-------------|-------------|-------------|
@@ -265,7 +267,7 @@ The eval suite runs **live** — real Wikipedia and Claude calls — so it needs
 What the numbers don't tell you:
 
 - **Single-trial variance** — even at temperature 0, runs are not bit-for-bit deterministic; one-trial scores carry variance (multi-trial pass@k is parked).
-- **Grader blind spots** — the code-based graders are approximate (e.g. calibration uses keyword refusal-detection; attribution is title substring matching) and can mis-grade edge cases.
+- **Grader blind spots** — the code-based graders are approximate: calibration reads the answer/refusal branch of the discriminated output, with keyword detection only as a backstop for degenerate or soft refusals; attribution is title-normalized substring matching. Both can mis-grade edge cases.
 - **Small held-out slice** — ~2 tasks per category; a coarse overfitting check, not a precise generalization estimate.
 - **Hillclimb table is empty** — the per-change log fills in once we freeze the suite and start climbing.
 
