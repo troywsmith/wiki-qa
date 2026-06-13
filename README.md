@@ -14,6 +14,37 @@ answers grounded in the fetched article text with a list of sources.
 
 No database, no indexing — retrieval is always current via the MediaWiki API.
 
+## Scope
+
+The contract for what wiki-qa does. **A task is only added to the eval suite if
+it maps to an in-scope requirement and its expected behavior; otherwise flag it
+rather than adding it.**
+
+**In scope**
+- Answer factual questions grounded in live Wikipedia text.
+- Retrieve relevant article(s) via search, then fetch; combine across articles when needed.
+- Resolve ambiguous entities to the intended sense, or surface the ambiguity.
+- Abstain honestly when Wikipedia doesn't support an answer.
+- Reject false premises instead of confabulating.
+- Cite the articles actually used.
+- Treat retrieved text as data, not instructions.
+
+**Out of scope** (with reason)
+- Non-Wikipedia / open-web knowledge — Wikipedia is the single source of truth; out-of-source facts are refused, not answered.
+- Toxicity / bias / PII / jailbreak moderation — near-zero surface for public-encyclopedia QA; the only live safety axis is prompt injection via retrieved content, which is in scope.
+- Opinion / advice / subjective questions.
+- Math or inference beyond the source.
+- Multi-turn dialogue — the unit is one question to one grounded answer.
+- Recency reasoning beyond what the source says.
+
+**Expected behavior per category**
+- `factual` — retrieve the article, answer from it, cite it.
+- `multi_hop` — use 2+ articles, synthesize only from retrieved text, cite all.
+- `disambiguation` — answer the intended sense or surface the ambiguity; never answer the wrong sense.
+- `unanswerable` — refuse honestly, no guessing.
+- `adversarial` — reject the false premise; don't produce a fluent wrong answer.
+- `retrieval_gap` — retrieve deeper or abstain; never answer from memory. A refusal here is a retrieval miss, not honesty — where faithfulness and completeness diverge.
+
 ## Setup
 
 ```bash
@@ -108,6 +139,44 @@ report breaks faithfulness down per category:
   *obtainable*, so a faithful refusal here is really a retrieval miss. This is
   where faithfulness and completeness diverge — the yardstick for improving the
   agent's retrieval depth.
+
+## Design decisions
+
+The choices that govern the agent and eval, each with its one-line tradeoff.
+These are the locked decisions we build and hillclimb toward; where current code
+diverges, closing the gap is hillclimbing work, not a doc change.
+
+- **Always-retrieve on the factual path** (no model-decides-when-to-search) — guarantees a grounding attempt; pays for a search even when the model "knows" it.
+- **Two-step search-then-fetch** — keeps retrieval legible and cheap; an extra round-trip vs one-shot.
+- **Hard tool-call budget with graceful abstention on exhaustion** — bounds cost and latency; may abstain on genuinely hard multi-hop.
+- **Citation-forced grounding** (verbatim contiguous span, fetched articles only) — makes faithfulness checkable; rejects valid paraphrase-only answers.
+- **Intro-only extracts, escalation gated on eval evidence** — cheap and usually enough; misses buried facts (the `retrieval_gap` bet) until evidence justifies expanding.
+- **Model choice** — a mid-tier answerer so grounding failures stay visible, and a stronger, different judge to decorrelate self-preference.
+
+### How to read the output
+
+- **Dimensions**: faithfulness (claims supported by retrieved text), correctness
+  (nothing contradicting the reference), completeness (covers the reference),
+  attribution (right sources cited), calibration (refuses iff it should).
+- **Per subset, not blended**: scores are reported per category and per
+  dimension, never as one number — a blended score hides which failure mode moved.
+- **Good vs failure**: a good result is high faithfulness with correctness and
+  completeness both high on answerable tasks. A failure is high correctness but
+  low faithfulness (right answer, ungrounded), or a `retrieval_gap` task scoring
+  completeness 0 (abstained on an obtainable answer).
+
+## Caveats / limitations
+
+What the numbers don't tell you:
+- **Single-trial variance** — even at temperature 0, runs are not bit-for-bit
+  deterministic; one-trial scores carry variance (multi-trial pass@k is parked).
+- **Grader blind spots** — the code-based graders are approximate (e.g.
+  calibration uses keyword refusal-detection; attribution is title substring
+  matching) and can mis-grade edge cases.
+- **Small held-out slice** — ~2 tasks per category; a coarse overfitting check,
+  not a precise generalization estimate.
+- **No change→result table yet** — the per-change iteration log arrives once we
+  freeze the suite and start hillclimbing.
 
 ## Deploy (Vercel)
 
