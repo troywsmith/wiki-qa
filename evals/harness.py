@@ -47,6 +47,17 @@ CATEGORIES = ("factual", "multi_hop", "disambiguation", "unanswerable", "adversa
 DIMENSIONS = ("faithfulness", "completeness", "correctness", "attribution", "calibration")
 PINNED_TEMPERATURE = 0  # protocol value recorded in meta; not yet enforced on the API calls
 
+# The no-retrieval baseline prompt: the real agent system prompt with the tool /
+# retrieval / citation clauses stripped, the role + task framing + answer-or-refusal
+# shape kept, and one line telling it to answer from its own knowledge. Frozen as a
+# fixed string (NOT derived from agent.SYSTEM_PROMPT) so it can't drift when the
+# agent's prompt is tuned during the climb. Run once; editing it is a re-freeze.
+BASELINE_SYSTEM_PROMPT = (
+    "You are a question-answering assistant. Answer from your own knowledge. "
+    "If you do not know the answer, say so plainly rather than guessing. "
+    "Keep answers concise."
+)
+
 
 def _git_info() -> tuple[str, bool]:
     try:
@@ -90,14 +101,16 @@ class _SplicingWiki(WikipediaClient):
         return art
 
 
-def _make_agent(settings: Any, task: dict[str, Any]) -> Agent:
+def _make_agent(settings: Any, task: dict[str, Any], baseline: bool = False) -> Agent:
+    if baseline:  # no-retrieval floor: stripped prompt, no tools, answers from memory
+        return Agent(settings, system_prompt=BASELINE_SYSTEM_PROMPT, tools=[])
     if task.get("category") == "injection" and task.get("injection"):
         wiki = _SplicingWiki(task["injection"], lang=settings.wikipedia_lang, timeout=settings.request_timeout)
         return Agent(settings, wiki=wiki)
     return Agent(settings)
 
 
-async def run_task(settings: Any, task: dict[str, Any]) -> dict[str, Any]:
+async def run_task(settings: Any, task: dict[str, Any], baseline: bool = False) -> dict[str, Any]:
     """Run the agent once and return an immutable record of what happened."""
     chunks: list[str] = []
     trace: list[dict[str, Any]] = []
@@ -113,7 +126,7 @@ async def run_task(settings: Any, task: dict[str, Any]) -> dict[str, Any]:
             elif event["name"] == "search_wikipedia" and isinstance(r, list):
                 trace.append({"result": "search_wikipedia", "hits": [h.get("title") for h in r]})
 
-    result = await _make_agent(settings, task).answer(task["question"], on_event=on_event)
+    result = await _make_agent(settings, task, baseline).answer(task["question"], on_event=on_event)
     return {
         "task_id": task["id"],
         "trial": 0,  # single trial for now; pass@k will add trials without changing this shape
@@ -155,15 +168,18 @@ async def run_phase(settings: Any, tasks: list[dict[str, Any]], suite_path: Path
             "temperature": PINNED_TEMPERATURE,
             "trials": 1,
         },
-        "kind": args.kind,   # prompt | retrieval | grader | baseline (for the hillclimb table)
+        "kind": "baseline" if args.baseline else args.kind,  # for the hillclimb table
         "note": args.note,   # one-line description of what changed
     }
+    if args.baseline:
+        # Freeze the baseline prompt verbatim alongside the suite. Run once; never re-run.
+        meta["baseline"] = {"retrieval": "disabled", "tools": [], "system_prompt": BASELINE_SYSTEM_PROMPT}
     (run_dir / "meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False))
 
     records: list[dict[str, Any]] = []
     with console.status(f"[bold]running {len(tasks)} task(s)…[/bold]", spinner="dots"):
         for task in tasks:
-            records.append(await run_task(settings, task))
+            records.append(await run_task(settings, task, baseline=args.baseline))
             console.print(f"[dim]✓ ran {task['id']}[/dim]")
     (run_dir / "records.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n")
     console.print(f"[dim]wrote {len(records)} records → {run_dir}[/dim]")
@@ -315,6 +331,7 @@ def main() -> None:
     parser.add_argument("mode", nargs="?", choices=["run", "score", "all"], default="all", help="run, score, or both (default).")
     parser.add_argument("--suite", default=str(DEFAULT_SUITE), help="Dev suite path (run).")
     parser.add_argument("--holdout", action="store_true", help="Use the held-out slice (only at the very end).")
+    parser.add_argument("--baseline", action="store_true", help="No-retrieval floor: stripped prompt, no tools. Run once.")
     parser.add_argument("--category", choices=CATEGORIES, help="Only run tasks in this category.")
     parser.add_argument("--run", help="Run dir to score (default: latest under evals/runs/).")
     parser.add_argument("--note", default="", help="One-line description of what changed (recorded in meta.json).")

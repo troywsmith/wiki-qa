@@ -19,12 +19,22 @@ SYSTEM_PROMPT = (
 
 
 class Agent:
-    def __init__(self, settings: Settings, wiki: WikipediaClient | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        wiki: WikipediaClient | None = None,
+        system_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.settings = settings
         self.client = AsyncAnthropic(api_key=settings.anthropic_api_key)
         # `wiki` is injectable so the eval harness can splice injection payloads
-        # into retrieved text without changing agent behavior.
+        # into retrieved text without changing agent behavior. `system_prompt` and
+        # `tools` are overridable so the harness can run the no-retrieval baseline
+        # (stripped prompt, no tools); both default to the real agent config.
         self.wiki = wiki or WikipediaClient(lang=settings.wikipedia_lang, timeout=settings.request_timeout)
+        self.system_prompt = system_prompt if system_prompt is not None else SYSTEM_PROMPT
+        self.tools = tools if tools is not None else TOOLS
 
     async def _dispatch_tool(self, name: str, args: dict[str, Any]) -> Any:
         if name == "search_wikipedia":
@@ -46,13 +56,15 @@ class Agent:
         sources: list[dict[str, str]] = []
 
         for step in range(self.settings.max_agent_steps):
-            resp = await self.client.messages.create(
-                model=self.settings.model,
-                max_tokens=self.settings.max_tokens,
-                system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
-                tools=TOOLS,
-                messages=messages,
-            )
+            create_kwargs: dict[str, Any] = {
+                "model": self.settings.model,
+                "max_tokens": self.settings.max_tokens,
+                "system": [{"type": "text", "text": self.system_prompt, "cache_control": {"type": "ephemeral"}}],
+                "messages": messages,
+            }
+            if self.tools:  # omit entirely for the no-retrieval baseline
+                create_kwargs["tools"] = self.tools
+            resp = await self.client.messages.create(**create_kwargs)
 
             if resp.stop_reason != "tool_use":
                 text = "".join(b.text for b in resp.content if b.type == "text")
