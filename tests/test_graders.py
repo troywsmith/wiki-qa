@@ -22,18 +22,28 @@ def test_classify_decision():
     assert graders.classify_decision({"answer": "That is a myth; Napoleon was of average height."}) == "answer"
 
 
-def test_attribution_recall_and_normalization():
-    rec = _rec(sources=["Mercury (element)"], expected_sources=["Mercury (element)"])
+def test_attribution_single_source_and_normalization():
+    rec = _rec(category="factual", sources=["Mercury (element)"], expected_sources=["Mercury (element)"])
     assert graders.attribution(rec)["pass"] is True
-    rec = _rec(sources=["Mercury"], expected_sources=["Mercury (element)"])  # normalized match
+    rec = _rec(category="factual", sources=["Mercury"], expected_sources=["Mercury (element)"])  # normalized match
     assert graders.attribution(rec)["pass"] is True
-    rec = _rec(sources=["Mount Fuji"], expected_sources=["Mount Fuji", "Japan"])  # multi: all required
+
+
+def test_attribution_multi_hop_requires_all():
+    rec = _rec(category="multi_hop", sources=["Mount Fuji"], expected_sources=["Mount Fuji", "Japan"])
     g = graders.attribution(rec)
-    assert g["pass"] is False and g["missing"] == ["Japan"]
+    assert g["pass"] is False and g["mode"] == "all" and g["missing"] == ["Japan"]
+
+
+def test_attribution_alternatives_for_non_multi_hop():
+    # any one expected source suffices (compiler-author: A-0 System OR Grace Hopper)
+    rec = _rec(category="factual", sources=["Grace Hopper"], expected_sources=["A-0 System", "Grace Hopper"])
+    g = graders.attribution(rec)
+    assert g["pass"] is True and g["mode"] == "any" and g["missing"] == []
 
 
 def test_attribution_na_on_refusal():
-    rec = _rec(answer="I could not find this.", sources=[], expected_sources=["Canberra"])
+    rec = _rec(category="factual", answer="I could not find this.", sources=[], expected_sources=["Canberra"])
     assert graders.attribution(rec)["applicable"] is False
 
 

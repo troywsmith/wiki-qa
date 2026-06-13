@@ -83,7 +83,12 @@ def normalize_title(title: str) -> str:
 
 
 def attribution(record: dict[str, Any]) -> dict[str, Any]:
-    """Recall over expected sources (all must appear). N/A on a refusal."""
+    """Did the agent cite the expected source(s)? N/A on a refusal.
+
+    `multi_hop` requires ALL expected sources (each hop must be grounded). Every
+    other category treats expected_sources as ALTERNATIVES — citing any one is
+    acceptable (e.g. compiler-author: 'A-0 System' OR 'Grace Hopper'). For a
+    single expected source the two modes coincide."""
     if classify_decision(record["output"]) == "refusal":
         return {"applicable": False, "pass": None, "reason": "refusal cites nothing"}
     expected = record.get("expected_sources") or []
@@ -91,14 +96,19 @@ def attribution(record: dict[str, Any]) -> dict[str, Any]:
         return {"applicable": False, "pass": None}
     cited = record["output"].get("sources") or []
     norm_cited = [normalize_title(c) for c in cited]
-    pairs, missing = [], []
+    pairs = []
     for e in expected:
         ne = normalize_title(e)
         match = next((c for c, nc in zip(cited, norm_cited) if ne == nc or ne in nc or nc in ne), None)
         pairs.append({"expected": e, "matched": match})
-        if match is None:
-            missing.append(e)
-    return {"applicable": True, "pass": not missing, "matched_pairs": pairs, "missing": missing}
+    matched = [p["expected"] for p in pairs if p["matched"]]
+    require_all = record.get("category") == "multi_hop"
+    if require_all:
+        passed, missing = len(matched) == len(expected), [p["expected"] for p in pairs if not p["matched"]]
+    else:  # alternatives: any one expected source suffices
+        passed, missing = bool(matched), ([] if matched else expected)
+    return {"applicable": True, "pass": passed, "mode": "all" if require_all else "any",
+            "matched_pairs": pairs, "missing": missing}
 
 
 def calibration(record: dict[str, Any]) -> dict[str, Any]:

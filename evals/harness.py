@@ -222,13 +222,51 @@ async def score_record(client: AsyncAnthropic, judge_model: str, record: dict[st
     }
 
 
-async def score_run(settings: Any, run_dir: Path) -> list[dict[str, Any]]:
+def _task_pass(grades: dict[str, Any], inj: dict[str, Any]) -> bool:
+    applicable = [g for g in grades.values() if g.get("applicable")]
+    return all(g["pass"] for g in applicable) and inj["pass"] is not False
+
+
+def _regrade_code(prev: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+    """Recompute only the CODE graders (attribution, calibration, injection) from
+    the record, reusing the cached judge verdicts. Used to re-score after a
+    code-grader fix without re-running the judges — so only the code dimensions can
+    move, and there's no API cost or judge variance."""
+    declared = set(record.get("dimensions", []))
+    grades = dict(prev["grades"])
+    if "attribution" in declared:
+        grades["attribution"] = graders.attribution(record)
+    if "calibration" in declared:
+        grades["calibration"] = graders.calibration(record)
+    inj = graders.injection_check(record)
+    return {
+        "task_id": record["task_id"],
+        "trial": record.get("trial", 0),
+        "category": record["category"],
+        "grades": grades,
+        "injection_check": inj,
+        "task_pass": _task_pass(grades, inj),
+    }
+
+
+async def score_run(settings: Any, run_dir: Path, regrade_code: bool = False) -> list[dict[str, Any]]:
     """Read a run dir's immutable records.jsonl, grade them, write scores.json next
-    to it (records are never touched), and return the scored view."""
+    to it (records are never touched), and return the scored view.
+
+    regrade_code: reuse the existing scores.json judge verdicts and only recompute
+    the code graders — no judge calls (use after a code-grader fix)."""
     records_path = run_dir / "records.jsonl"
     if not records_path.exists():
         raise SystemExit(f"no records.jsonl in {run_dir}")
     records = [json.loads(l) for l in records_path.read_text().splitlines() if l.strip()]
+
+    if regrade_code:
+        prev = {(s["task_id"], s.get("trial", 0)): s for s in json.loads((run_dir / "scores.json").read_text())["scored"]}
+        scored = [_regrade_code(prev[(r["task_id"], r.get("trial", 0))], r) for r in records]
+        console.print(f"[dim]regraded code graders for {len(scored)} record(s) — judge verdicts reused, no API[/dim]")
+        (run_dir / "scores.json").write_text(json.dumps({"run_id": run_dir.name, "scored": scored}, indent=2, ensure_ascii=False))
+        (run_dir / "digest.txt").write_text(digest.build_text(records, scored) + "\n")
+        return scored
 
     if settings.judge_model in {r.get("answerer_model") for r in records}:
         console.print(f"[red]warning: judge model {settings.judge_model} equals the answerer model — self-preference risk.[/red]")
@@ -322,7 +360,7 @@ async def main_async(args: argparse.Namespace) -> None:
         console.print(f"[dim]scoring run ← {run_dir}[/dim]")
 
     if args.mode in ("score", "all"):
-        scored = await score_run(settings, run_dir)
+        scored = await score_run(settings, run_dir, regrade_code=args.regrade_code)
         report(scored)
 
 
@@ -334,6 +372,7 @@ def main() -> None:
     parser.add_argument("--baseline", action="store_true", help="No-retrieval floor: stripped prompt, no tools. Run once.")
     parser.add_argument("--category", choices=CATEGORIES, help="Only run tasks in this category.")
     parser.add_argument("--run", help="Run dir to score (default: latest under evals/runs/).")
+    parser.add_argument("--regrade-code", action="store_true", help="Re-score reusing cached judge verdicts; only recompute code graders (no API).")
     parser.add_argument("--note", default="", help="One-line description of what changed (recorded in meta.json).")
     parser.add_argument("--kind", default="baseline", choices=["baseline", "prompt", "retrieval", "grader"], help="Change kind for the hillclimb table.")
     asyncio.run(main_async(parser.parse_args()))
