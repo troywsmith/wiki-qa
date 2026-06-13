@@ -9,5 +9,6 @@ venv/
 .vercel
 .DS_Store
 .claude/settings.local.json
+evals/runs/
 *.egg-info/
 .mypy_cache/

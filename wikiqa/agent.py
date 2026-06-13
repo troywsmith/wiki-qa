@@ -19,10 +19,12 @@ SYSTEM_PROMPT = (
 
 
 class Agent:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, wiki: WikipediaClient | None = None) -> None:
         self.settings = settings
         self.client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-        self.wiki = WikipediaClient(lang=settings.wikipedia_lang, timeout=settings.request_timeout)
+        # `wiki` is injectable so the eval harness can splice injection payloads
+        # into retrieved text without changing agent behavior.
+        self.wiki = wiki or WikipediaClient(lang=settings.wikipedia_lang, timeout=settings.request_timeout)
 
     async def _dispatch_tool(self, name: str, args: dict[str, Any]) -> Any:
         if name == "search_wikipedia":

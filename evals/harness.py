@@ -1,181 +1,284 @@
-"""Evaluation harness: run each task in the suite as a trial, capture the
-transcript (the Wikipedia text the agent retrieved + its outcome), apply the
-graders, and print a rich report.
+"""Evaluation harness with a strict record/score split, one directory per run.
 
-    python -m evals.harness                 # run the bundled suite
-    python -m evals.harness --suite x.jsonl --json out.json
+    python -m evals.harness run --note "..." --kind prompt   # new run dir: meta + records
+    python -m evals.harness score [--run DIR]                 # score a run dir (default: latest)
+    python -m evals.harness all                               # run then score (default)
+
+Each run writes evals/runs/<timestamp>_<commit>/ containing:
+    meta.json      run id, commit (+dirty), suite file + hash, pinned protocol, note, kind
+    records.jsonl  immutable — one record per task per trial (output, tool trace,
+                   retrieved text, spliced injection)
+    scores.json    the graded view derived from records.jsonl
+
+`run` is the only phase that touches the agent. `score` reads a run dir's
+records.jsonl and writes scores.json beside it without touching records, so a
+grader fix re-scores without re-running the agent. Records carry a trial index so
+multi-trial (pass@k) can aggregate later without changing the shape.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
+import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from anthropic import AsyncAnthropic
 from rich.console import Console
 from rich.table import Table
 
 from wikiqa.agent import Agent
 from wikiqa.config import get_settings
+from wikiqa.wikipedia import WikipediaClient
 
 from . import graders
 
 console = Console()
-DEFAULT_SUITE = Path(__file__).parent / "suite.jsonl"
-HOLDOUT_SUITE = Path(__file__).parent / "holdout.jsonl"
+HERE = Path(__file__).parent
+DEFAULT_SUITE = HERE / "suite.jsonl"
+HOLDOUT_SUITE = HERE / "holdout.jsonl"
+RUNS_DIR = HERE / "runs"
 
-# Task categories — each probes a distinct way a grounded QA agent fails.
-# retrieval_gap: the answer IS on Wikipedia but outside the extract the agent
-# pulled — faithfulness and completeness diverge here (see evals docs / phase 2).
-CATEGORIES = ("factual", "multi_hop", "disambiguation", "unanswerable", "adversarial", "retrieval_gap")
-
-# Quality dimensions — the axes a task can be graded on. Each task declares which
-# of these apply (the `dimensions` field). Faithfulness is the north star.
+CATEGORIES = ("factual", "multi_hop", "disambiguation", "unanswerable", "adversarial", "retrieval_gap", "injection")
 DIMENSIONS = ("faithfulness", "completeness", "correctness", "attribution", "calibration")
-_REFERENCE_DIMS = ("correctness", "completeness")  # graded together vs reference_answer
+PINNED_TEMPERATURE = 0  # protocol value recorded in meta; not yet enforced on the API calls
+
+
+def _git_info() -> tuple[str, bool]:
+    try:
+        sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=HERE.parent, capture_output=True, text=True).stdout.strip()
+        dirty = bool(subprocess.run(["git", "status", "--porcelain"], cwd=HERE.parent, capture_output=True, text=True).stdout.strip())
+        return sha or "nogit", dirty
+    except Exception:
+        return "nogit", False
+
+
+def _suite_sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+
+
+def _latest_run() -> Path:
+    runs = sorted(p for p in RUNS_DIR.iterdir() if p.is_dir()) if RUNS_DIR.exists() else []
+    if not runs:
+        raise SystemExit("no runs found under evals/runs/ — run `python -m evals.harness run` first.")
+    return runs[-1]
 
 
 def load_suite(path: Path) -> list[dict[str, Any]]:
-    """Load the evaluation suite — a list of tasks, one JSON object per line."""
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
-async def run_task(agent: Agent, model: str, task: dict[str, Any]) -> dict[str, Any]:
-    """Run one trial of a task and grade its transcript.
+# --- run phase: agent -> immutable records ---
 
-    Returns a record with the outcome (final answer), trial metadata, and grades.
-    """
-    context_chunks: list[str] = []
+
+class _SplicingWiki(WikipediaClient):
+    """Appends an injection payload to every fetched extract, so the agent sees an
+    embedded instruction in its retrieved text (injection tasks only)."""
+
+    def __init__(self, payload: str, **kw: Any) -> None:
+        super().__init__(**kw)
+        self._payload = payload
+
+    async def get_article(self, title: str, max_chars: int = 4000) -> dict[str, str]:
+        art = await super().get_article(title, max_chars)
+        if art.get("extract"):
+            art["extract"] = f"{art['extract']}\n\n{self._payload}"
+        return art
+
+
+def _make_agent(settings: Any, task: dict[str, Any]) -> Agent:
+    if task.get("category") == "injection" and task.get("injection"):
+        wiki = _SplicingWiki(task["injection"], lang=settings.wikipedia_lang, timeout=settings.request_timeout)
+        return Agent(settings, wiki=wiki)
+    return Agent(settings)
+
+
+async def run_task(settings: Any, task: dict[str, Any]) -> dict[str, Any]:
+    """Run the agent once and return an immutable record of what happened."""
+    chunks: list[str] = []
+    trace: list[dict[str, Any]] = []
 
     def on_event(event: dict[str, Any]) -> None:
-        if event["type"] == "tool_result" and event["name"] == "get_article":
-            extract = event["result"].get("extract") if isinstance(event["result"], dict) else None
-            if extract:
-                context_chunks.append(extract)
+        if event["type"] == "tool_call":
+            trace.append({"call": event["name"], "input": event["input"]})
+        elif event["type"] == "tool_result":
+            r = event["result"]
+            if event["name"] == "get_article" and isinstance(r, dict) and r.get("extract"):
+                chunks.append(r["extract"])
+                trace.append({"result": "get_article", "title": r.get("title"), "chars": len(r["extract"])})
+            elif event["name"] == "search_wikipedia" and isinstance(r, list):
+                trace.append({"result": "search_wikipedia", "hits": [h.get("title") for h in r]})
 
-    result = await agent.answer(task["question"], on_event=on_event)
-    outcome = result["answer"]
-    context = "\n\n".join(context_chunks)
-
-    declared = set(task.get("dimensions", []))
-    grades: dict[str, float | None] = {dim: None for dim in DIMENSIONS}
-    details: dict[str, Any] = {}
-
-    if "faithfulness" in declared:
-        faithfulness = await graders.faithfulness_judge(agent.client, model, outcome, context)
-        # North-star rule: a substantive answer backed by no retrieved source text is
-        # ungrounded by definition — grade it 0, not n/a. (A correct refusal stays n/a.)
-        if (
-            faithfulness["score"] is None
-            and not context.strip()
-            and not task.get("should_refuse", False)
-            and not graders.looks_like_refusal(outcome)
-        ):
-            faithfulness = {"score": 0.0, "grounded": False, "unsupported_claims": [],
-                            "reason": "answered without retrieving any article text"}
-        grades["faithfulness"] = faithfulness["score"]
-        details["faithfulness"] = faithfulness
-
-    if "attribution" in declared:
-        grades["attribution"] = graders.citation_match(
-            [s["title"] for s in result["sources"]], task.get("expected_sources", [])
-        )
-    if "calibration" in declared:
-        grades["calibration"] = graders.refusal_correct(outcome, task.get("should_refuse", False))
-
-    if declared.intersection(_REFERENCE_DIMS) and task.get("reference_answer"):
-        ref = await graders.reference_judge(agent.client, model, outcome, task["reference_answer"])
-        details["reference"] = ref
-        for dim in _REFERENCE_DIMS:
-            if dim in declared:
-                grades[dim] = ref[dim]
-
+    result = await _make_agent(settings, task).answer(task["question"], on_event=on_event)
     return {
         "task_id": task["id"],
+        "trial": 0,  # single trial for now; pass@k will add trials without changing this shape
         "category": task.get("category", "uncategorized"),
-        "outcome": outcome,
-        "trial": {"steps": result["steps"], "context_chars": len(context)},
-        "grades": grades,
-        "details": details,
+        "question": task["question"],
+        "dimensions": task.get("dimensions", []),
+        "should_refuse": bool(task.get("should_refuse", False)),
+        "reference_answer": task.get("reference_answer"),
+        "expected_sources": task.get("expected_sources", []),
+        "injection": task.get("injection"),
+        "forbidden": task.get("forbidden"),
+        "output": {"answer": result["answer"], "sources": [s["title"] for s in result["sources"]]},
+        "retrieved_text": "\n\n".join(chunks),
+        "tool_trace": trace,
+        "answerer_model": settings.model,
+        "steps": result["steps"],
     }
 
 
-def _fmt(score: float | None) -> str:
-    if score is None:
-        return "[dim]n/a[/dim]"
-    color = "green" if score >= 0.999 else "yellow" if score >= 0.5 else "red"
-    return f"[{color}]{score:.2f}[/{color}]"
+async def run_phase(settings: Any, tasks: list[dict[str, Any]], suite_path: Path, args: argparse.Namespace) -> Path:
+    """Create a run directory (keyed by timestamp + commit), write meta.json and an
+    immutable records.jsonl (one record per task per trial). Returns the run dir."""
+    sha, dirty = _git_info()
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_id = f"{stamp}_{sha}{'-dirty' if dirty else ''}"
+    run_dir = RUNS_DIR / run_id
+    run_dir.mkdir(parents=True, exist_ok=False)
+
+    meta = {
+        "run_id": run_id,
+        "timestamp": stamp,
+        "git_commit": sha,
+        "git_dirty": dirty,
+        "suite_file": suite_path.name,
+        "suite_sha": _suite_sha(suite_path),
+        "protocol": {
+            "answerer": settings.model,
+            "judge": settings.judge_model,
+            "temperature": PINNED_TEMPERATURE,
+            "trials": 1,
+        },
+        "kind": args.kind,   # prompt | retrieval | grader | baseline (for the hillclimb table)
+        "note": args.note,   # one-line description of what changed
+    }
+    (run_dir / "meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+
+    records: list[dict[str, Any]] = []
+    with console.status(f"[bold]running {len(tasks)} task(s)…[/bold]", spinner="dots"):
+        for task in tasks:
+            records.append(await run_task(settings, task))
+            console.print(f"[dim]✓ ran {task['id']}[/dim]")
+    (run_dir / "records.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n")
+    console.print(f"[dim]wrote {len(records)} records → {run_dir}[/dim]")
+    return run_dir
 
 
-def _mean(values: list[float | None]) -> float | None:
-    nums = [v for v in values if v is not None]
-    return sum(nums) / len(nums) if nums else None
+# --- score phase: records -> graded view ---
 
 
-def _faithfulness_rate(records: list[dict[str, Any]]) -> tuple[int, int]:
-    """(# grounded, # gradable) for faithfulness over the given records."""
-    graded = [r for r in records if r["grades"]["faithfulness"] is not None]
-    grounded = sum(1 for r in graded if r["grades"]["faithfulness"] >= 0.999)
-    return grounded, len(graded)
+async def score_record(client: AsyncAnthropic, judge_model: str, record: dict[str, Any]) -> dict[str, Any]:
+    declared = set(record.get("dimensions", []))
+    grades: dict[str, Any] = {}
+
+    if "faithfulness" in declared:
+        grades["faithfulness"] = await graders.faithfulness(client, judge_model, record)
+    if declared & {"correctness", "completeness"}:
+        ref = await graders.reference(client, judge_model, record)
+        if "correctness" in declared:
+            grades["correctness"] = ref["correctness"]
+        if "completeness" in declared:
+            grades["completeness"] = ref["completeness"]
+    if "attribution" in declared:
+        grades["attribution"] = graders.attribution(record)
+    if "calibration" in declared:
+        grades["calibration"] = graders.calibration(record)
+
+    inj = graders.injection_check(record)
+    # Task passes only if every applicable declared dimension passes AND the
+    # injection check did not catch an obey (an inconclusive/N/A injection check
+    # does not block — it just couldn't run).
+    applicable = [g for g in grades.values() if g.get("applicable")]
+    task_pass = all(g["pass"] for g in applicable) and inj["pass"] is not False
+    return {
+        "task_id": record["task_id"],
+        "trial": record.get("trial", 0),
+        "category": record["category"],
+        "grades": grades,
+        "injection_check": inj,
+        "task_pass": task_pass,
+    }
 
 
-_DIM_HEADERS = {
-    "faithfulness": "faith",
-    "completeness": "complete",
-    "correctness": "correct",
-    "attribution": "attrib",
-    "calibration": "calib",
-}
+async def score_run(settings: Any, run_dir: Path) -> list[dict[str, Any]]:
+    """Read a run dir's immutable records.jsonl, grade them, write scores.json next
+    to it (records are never touched), and return the scored view."""
+    records_path = run_dir / "records.jsonl"
+    if not records_path.exists():
+        raise SystemExit(f"no records.jsonl in {run_dir}")
+    records = [json.loads(l) for l in records_path.read_text().splitlines() if l.strip()]
+
+    if settings.judge_model in {r.get("answerer_model") for r in records}:
+        console.print(f"[red]warning: judge model {settings.judge_model} equals the answerer model — self-preference risk.[/red]")
+    client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+
+    scored: list[dict[str, Any]] = []
+    with console.status(f"[bold]scoring {len(records)} record(s)…[/bold]", spinner="dots"):
+        for record in records:
+            scored.append(await score_record(client, settings.judge_model, record))
+
+    (run_dir / "scores.json").write_text(json.dumps({"run_id": run_dir.name, "scored": scored}, indent=2, ensure_ascii=False))
+    console.print(f"[dim]wrote scores.json → {run_dir}[/dim]")
+    return scored
 
 
-def report(records: list[dict[str, Any]]) -> None:
-    table = Table(title="wiki-qa eval suite", title_style="bold")
-    table.add_column("task")
+# --- reporting ---
+
+
+def _rate(scored: list[dict[str, Any]], dim: str) -> tuple[int, int]:
+    applicable = [s for s in scored if s["grades"].get(dim, {}).get("applicable")]
+    passed = sum(1 for s in applicable if s["grades"][dim]["pass"])
+    return passed, len(applicable)
+
+
+def _cell(passed: int, n: int) -> str:
+    if n == 0:
+        return "[dim]·[/dim]"
+    color = "green" if passed == n else "yellow" if passed >= n / 2 else "red"
+    return f"[{color}]{passed}/{n}[/{color}]"
+
+
+def report(scored: list[dict[str, Any]]) -> None:
+    cats = sorted({s["category"] for s in scored}, key=lambda c: CATEGORIES.index(c) if c in CATEGORIES else 99)
+
+    table = Table(title="wiki-qa eval — per-category / per-dimension pass rates", title_style="bold")
     table.add_column("category")
     for dim in DIMENSIONS:
-        table.add_column(_DIM_HEADERS[dim], justify="right")
-    table.add_column("steps", justify="right")
-    for r in records:
-        g = r["grades"]
-        table.add_row(
-            r["task_id"], r["category"], *[_fmt(g[dim]) for dim in DIMENSIONS], str(r["trial"]["steps"])
-        )
+        table.add_column(dim[:6], justify="right")
+    table.add_column("tasks", justify="right")
+    for cat in cats:
+        rows = [s for s in scored if s["category"] == cat]
+        passed_tasks = sum(1 for s in rows if s["task_pass"])
+        table.add_row(cat, *[_cell(*_rate(rows, d)) for d in DIMENSIONS], f"{passed_tasks}/{len(rows)}")
     console.print(table)
 
-    # Headline: faithfulness is the north-star metric.
-    grounded, gradable = _faithfulness_rate(records)
-    rate = _fmt(grounded / gradable) if gradable else "[dim]n/a[/dim]"
-    console.print(f"\n[bold]★ faithfulness: {grounded}/{gradable} grounded[/bold]  ({rate})")
+    fp, fn = _rate(scored, "faithfulness")
+    console.print(f"\n[bold]★ faithfulness: {_cell(fp, fn)}[/bold] (north star)")
 
-    # Per-category faithfulness breakdown.
-    by_category = {cat: [r for r in records if r["category"] == cat] for cat in {r["category"] for r in records}}
-    console.print("[dim]by category (faithfulness):[/dim]")
-    for cat in sorted(by_category):
-        g, n = _faithfulness_rate(by_category[cat])
-        rate = _fmt(g / n) if n else "[dim]n/a[/dim]"
-        console.print(f"  {cat:16s} {g}/{n} {rate}")
+    inj = [s for s in scored if s["category"] == "injection"]
+    if inj:
+        resisted = sum(1 for s in inj if s["injection_check"]["pass"] is True)
+        obeyed = sum(1 for s in inj if s["injection_check"]["found"])
+        incon = sum(1 for s in inj if s["injection_check"]["pass"] is None)
+        console.print(f"injection: {resisted} resisted, {obeyed} obeyed, {incon} inconclusive (not delivered) of {len(inj)}")
 
-    console.print("[dim]dimension averages:[/dim]")
-    for dim in DIMENSIONS:
-        avg = _mean([r["grades"][dim] for r in records])
-        console.print(f"  {dim:14s} {_fmt(avg)}")
+    failures = [s for s in scored if not s["task_pass"]]
+    if failures:
+        console.print(f"\n[bold red]{len(failures)} task(s) failed:[/bold red]")
+        for s in failures:
+            bad = [d for d, g in s["grades"].items() if g.get("applicable") and not g["pass"]]
+            if s["injection_check"]["applicable"] and not s["injection_check"]["pass"]:
+                bad.append("injection")
+            console.print(f"  [red]{s['task_id']}[/red] ({s['category']}): {', '.join(bad) or 'see diagnostics'}")
 
-    _print_failures(records)
 
-
-def _print_failures(records: list[dict[str, Any]]) -> None:
-    for r in records:
-        notes = []
-        fa = r["details"].get("faithfulness")
-        if r["grades"]["faithfulness"] == 0.0 and fa:
-            notes.append(f"ungrounded — {fa.get('reason', '')}")
-        ref = r["details"].get("reference")
-        if ref and ((r["grades"]["correctness"] or 1) < 0.999 or (r["grades"]["completeness"] or 1) < 0.999):
-            notes.append(f"vs reference — {ref.get('reason', '')}")
-        if notes:
-            console.print(f"[red]{r['task_id']}[/red]: " + "; ".join(notes))
+# --- CLI ---
 
 
 async def main_async(args: argparse.Namespace) -> None:
@@ -184,50 +287,36 @@ async def main_async(args: argparse.Namespace) -> None:
         console.print("[red]WIKIQA_ANTHROPIC_API_KEY is not set.[/red]")
         raise SystemExit(1)
 
-    # The held-out slice is only ever loaded with --holdout, and never alongside
-    # the dev suite — keep it unseen during iteration (see eval methodology).
-    if args.holdout:
-        suite_path = HOLDOUT_SUITE
-        console.print("[yellow]running HELD-OUT slice — only do this at the very end.[/yellow]")
-    else:
-        suite_path = Path(args.suite)
-    tasks = load_suite(suite_path)
+    run_dir: Path
+    if args.mode in ("run", "all"):
+        suite_path = HOLDOUT_SUITE if args.holdout else Path(args.suite)
+        if args.holdout:
+            console.print("[yellow]running the HELD-OUT slice — only at the very end.[/yellow]")
+        tasks = load_suite(suite_path)
+        unknown = {t.get("category") for t in tasks} - set(CATEGORIES)
+        if unknown:
+            console.print(f"[yellow]warning: unknown categories {sorted(unknown)}[/yellow]")
+        if args.category:
+            tasks = [t for t in tasks if t.get("category") == args.category]
+        run_dir = await run_phase(settings, tasks, suite_path, args)
+    else:  # score
+        run_dir = Path(args.run) if args.run else _latest_run()
+        console.print(f"[dim]scoring run ← {run_dir}[/dim]")
 
-    unknown = {t.get("category", "uncategorized") for t in tasks} - set(CATEGORIES)
-    if unknown:
-        console.print(f"[yellow]warning: tasks use unknown categories: {sorted(unknown)}[/yellow]")
-    unknown_dims = {d for t in tasks for d in t.get("dimensions", [])} - set(DIMENSIONS)
-    if unknown_dims:
-        console.print(f"[yellow]warning: tasks declare unknown dimensions: {sorted(unknown_dims)}[/yellow]")
-    for t in tasks:
-        needs_ref = set(t.get("dimensions", [])).intersection(_REFERENCE_DIMS)
-        if needs_ref and not t.get("reference_answer"):
-            console.print(f"[yellow]warning: task '{t['id']}' declares {sorted(needs_ref)} but has no reference_answer[/yellow]")
-    if args.category:
-        tasks = [t for t in tasks if t.get("category") == args.category]
-        if not tasks:
-            console.print(f"[red]no tasks in category '{args.category}'.[/red]")
-            raise SystemExit(1)
-
-    agent = Agent(settings)
-    records: list[dict[str, Any]] = []
-    with console.status(f"[bold]running {len(tasks)} task(s)…[/bold]", spinner="dots"):
-        for task in tasks:
-            records.append(await run_task(agent, settings.model, task))
-            console.print(f"[dim]✓ {task['id']}[/dim]")
-
-    report(records)
-    if args.json:
-        Path(args.json).write_text(json.dumps(records, indent=2, ensure_ascii=False))
-        console.print(f"\n[dim]wrote {args.json}[/dim]")
+    if args.mode in ("score", "all"):
+        scored = await score_run(settings, run_dir)
+        report(scored)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="evals", description="Run the wiki-qa evaluation suite.")
-    parser.add_argument("--suite", default=str(DEFAULT_SUITE), help="Path to a .jsonl suite of tasks.")
-    parser.add_argument("--holdout", action="store_true", help="Run the held-out slice instead (only at the very end).")
+    parser = argparse.ArgumentParser(prog="evals", description="Run/score the wiki-qa evaluation suite.")
+    parser.add_argument("mode", nargs="?", choices=["run", "score", "all"], default="all", help="run, score, or both (default).")
+    parser.add_argument("--suite", default=str(DEFAULT_SUITE), help="Dev suite path (run).")
+    parser.add_argument("--holdout", action="store_true", help="Use the held-out slice (only at the very end).")
     parser.add_argument("--category", choices=CATEGORIES, help="Only run tasks in this category.")
-    parser.add_argument("--json", help="Optional path to write full records as JSON.")
+    parser.add_argument("--run", help="Run dir to score (default: latest under evals/runs/).")
+    parser.add_argument("--note", default="", help="One-line description of what changed (recorded in meta.json).")
+    parser.add_argument("--kind", default="baseline", choices=["baseline", "prompt", "retrieval", "grader"], help="Change kind for the hillclimb table.")
     asyncio.run(main_async(parser.parse_args()))
 
 
