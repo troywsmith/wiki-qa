@@ -88,3 +88,16 @@ Vercel detects the FastAPI app via the `[tool.vercel] entrypoint` in
 All settings are environment variables prefixed `WIKIQA_` (see `.env.example`):
 `ANTHROPIC_API_KEY`, `MODEL`, `MAX_AGENT_STEPS`, `MAX_TOKENS`,
 `WIKIPEDIA_LANG`, `REQUEST_TIMEOUT`.
+
+## Next steps (parked)
+
+Deliberately deferred until the eval suite is fully built out:
+
+- **Multi-trial metrics (pass@k / pass^k).** Run each task as multiple trials and
+  report pass@k / pass^k for stability against model variance. Parked until the
+  suite has enough tasks to make repeated trials worthwhile.
+- **Application / prompt grounding improvements.** The agent currently over-claims
+  past its thin retrieved extracts and sometimes answers without reading an
+  article. Candidate fixes: require reading before answering, and retrieve fuller
+  article text. Parked until the eval suite is finalized so we can measure the
+  impact rather than guess.
