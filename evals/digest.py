@@ -37,14 +37,28 @@ def _verdict(g: dict[str, Any]) -> str:
     return "PASS" if g["pass"] else "FAIL"
 
 
+def _trial0(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Keep the lowest-trial entry per task (deterministic representative)."""
+    out: dict[str, dict[str, Any]] = {}
+    for it in items:
+        tid = it["task_id"]
+        if tid not in out or it.get("trial", 0) < out[tid].get("trial", 0):
+            out[tid] = it
+    return out
+
+
 def build_text(records: list[dict[str, Any]], scored: list[dict[str, Any]]) -> str:
-    rec = {r["task_id"]: r for r in records}
-    sc = {s["task_id"]: s for s in scored}
+    n_trials = max((s.get("trial", 0) for s in scored), default=0) + 1
+    rec = _trial0(records)
+    sc = _trial0(scored)
 
     def grade(tid: str, dim: str) -> dict[str, Any]:
         return sc[tid]["grades"].get(dim, {})
 
     out: list[str] = []
+    if n_trials > 1:
+        out.append(f"NOTE: {n_trials} trials per task — transcripts/verdicts below are trial 0 only; "
+                   "majority pass-rates are in scores.json and the harness report.")
     section = lambda title: out.append(f"\n===== {title} =====")
 
     # FAITHFULNESS — mix of pass/fail

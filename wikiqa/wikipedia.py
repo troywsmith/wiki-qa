@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-USER_AGENT = "wiki-qa/0.1 (https://github.com/Snowbird-Labs/wiki-qa)"
+USER_AGENT = "wiki-qa/0.1 (https://github.com/troywsmith/wiki-qa)"
 
 
 def _api_url(lang: str) -> str:

@@ -141,12 +141,26 @@ def main() -> None:
     args = parser.parse_args()
     run_dir = Path(args.run) if args.run else _latest_run()
 
-    records = {r["task_id"]: r for r in _load_jsonl(run_dir / "records.jsonl")}
-    scored = {s["task_id"]: s for s in json.loads((run_dir / "scores.json").read_text())["scored"]}
+    raw_records = _load_jsonl(run_dir / "records.jsonl")
+    raw_scored = json.loads((run_dir / "scores.json").read_text())["scored"]
+    n_trials = max((r.get("trial", 0) for r in raw_records), default=0) + 1
+
+    def _trial0(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {}
+        for it in items:
+            tid = it["task_id"]
+            if tid not in out or it.get("trial", 0) < out[tid].get("trial", 0):
+                out[tid] = it
+        return out
+
+    records = _trial0(raw_records)
+    scored = _trial0(raw_scored)
     dev = _load_jsonl(HERE / "suite.jsonl")
     holdout = _load_jsonl(HERE / "holdout.jsonl")
 
     text = build_verify_text(dev, holdout, records, scored)
+    if n_trials > 1:
+        text = f"NOTE: {n_trials} trials per task — showing trial 0 only.\n\n" + text
     (run_dir / "verify.txt").write_text(text + "\n")
     print(f"verify digest of {run_dir.name}  (wrote verify.txt)\n")
     print(text)
