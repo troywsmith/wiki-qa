@@ -1,0 +1,67 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+A Wikipedia-grounded QA service: a FastAPI app fronting a tool-calling Claude
+agent. The agent answers questions strictly from **live** Wikipedia content it
+retrieves at request time — there is no vector store, index, or local corpus.
+
+## Commands
+
+All commands assume the venv is active (`source .venv/bin/activate`).
+
+```bash
+pip install -e ".[dev]"                              # install runtime + dev deps
+uvicorn wikiqa.main:app --reload                     # run dev server (localhost:8000)
+pytest                                               # run all tests
+pytest tests/test_wikipedia.py::test_search_parses_hits  # run a single test
+```
+
+Tests mock all HTTP with `respx` — they never hit the network or need an API key.
+
+## Architecture
+
+Request flow: `main.py` (HTTP) → `agent.py` (the tool loop) → `wikipedia.py`
+(retrieval). `config.py` supplies settings to all of them.
+
+- **`wikiqa/main.py`** — FastAPI app and the `POST /api/ask` + `GET /api/health`
+  routes. Request/response Pydantic models live here. This is also the Vercel
+  entrypoint (see Deployment).
+- **`wikiqa/agent.py`** — the agent loop. Calls `client.messages.create` with the
+  Wikipedia `TOOLS`, and while `stop_reason == "tool_use"` it dispatches each
+  tool call back to the `WikipediaClient`, appends `tool_result` blocks, and
+  re-calls the model. Loops until the model stops requesting tools or
+  `max_agent_steps` is hit. The system prompt is sent with `cache_control`
+  (prompt caching) since it's constant across the loop.
+- **`wikiqa/wikipedia.py`** — `WikipediaClient` (async MediaWiki action API
+  wrapper) plus the `TOOLS` schema list advertised to Claude. **Tool names in
+  `TOOLS` must stay in sync with the `_dispatch_tool` dispatch in `agent.py`** —
+  they're matched by string.
+- **`wikiqa/config.py`** — `Settings` (pydantic-settings). All env vars are
+  prefixed `WIKIQA_`. `get_settings()` is `lru_cache`d.
+
+### Grounding contract
+
+Two layers enforce "answer only from Wikipedia": the system prompt instructs the
+model to cite and refuse when sources lack the answer, and `agent.py`
+independently tracks which articles were actually fetched (non-empty extract) to
+return as structured `sources` — so citations reflect real retrievals, not just
+what the model claims.
+
+## Conventions
+
+- Everything on the request path is **async** (FastAPI, `AsyncAnthropic`,
+  `httpx.AsyncClient`). Keep new I/O async.
+- `requires-python` is `>=3.11` so the project installs on the local toolchain;
+  Vercel runs it on its default 3.12+. Don't use 3.12-only syntax.
+- When changing the model's capabilities, update the tool schema and its
+  dispatcher together, and adjust the system prompt if the workflow changes.
+
+## Deployment (Vercel)
+
+Vercel detects the FastAPI app from `[tool.vercel] entrypoint = "wikiqa.main:app"`
+in `pyproject.toml` and routes all traffic to it on Fluid Compute — there is no
+`vercel.json` and no `api/` directory. Dependencies are installed from
+`pyproject.toml`. The only required env var is `WIKIQA_ANTHROPIC_API_KEY`.

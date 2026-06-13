@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pytest:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(uvicorn:*)",
+      "Bash(pip install:*)",
+      "Bash(python -m pip:*)",
+      "Bash(python -c:*)",
+      "Bash(ruff:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git branch:*)",
+      "Bash(ls:*)",
+      "Bash(find:*)"
+    ]
+  }
+}

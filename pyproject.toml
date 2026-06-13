@@ -1,0 +1,34 @@
+[project]
+name = "wiki-qa"
+version = "0.1.0"
+description = "Wikipedia-grounded QA: a tool-calling agent that answers strictly from live Wikipedia."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.117.1",
+    "anthropic>=0.42.0",
+    "httpx>=0.28.1",
+    "pydantic>=2.10.4",
+    "pydantic-settings>=2.7.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "uvicorn[standard]>=0.34.0",
+    "pytest>=8.3.4",
+    "pytest-asyncio>=0.25.0",
+    "respx>=0.22.0",
+]
+
+# Vercel detects the FastAPI app from this entrypoint and routes all requests to it.
+[tool.vercel]
+entrypoint = "wikiqa.main:app"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.setuptools]
+packages = ["wikiqa"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
