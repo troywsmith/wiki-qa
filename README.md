@@ -232,6 +232,7 @@ with real retrieval while holding correctness/completeness.
 |------|--------|------|--------------|--------------|-------------|-------------|-------------|
 | 2026-06-13 | force read-before-answer | prompt | 17/30 | 25/26 | 29/30 | 22/25 | 31/32 |
 | 2026-06-13 | recalibrate attribution: any-of for non-multi_hop | grader | 17/30 | 25/26 | 29/30 | 23/25 | 31/32 |
+| 2026-06-13 | retrieve fuller article text | retrieval | 16/32 | 26/26 | 32/32 | 21/26 | 31/32 |
 
 Step 1 (prompt) vs baseline: faithfulness 0/32 → 17/30 and attribution 0/26 →
 22/25 (off zero — the agent now fetches before answering); calibration 28/32 →
@@ -247,6 +248,15 @@ except `multi_hop` (which still needs all). All prior runs were re-scored under
 the fixed grader (judge verdicts reused, no agent re-run); the only movement is
 attribution 22/25 → 23/25 — task-pass is unchanged (compiler-author still fails
 faithfulness). The two rows above share the same agent; the +1 is the instrument.
+
+Step 2 (retrieval) **did not work** and slightly regressed — kept for the record.
+The `retrieval_gap` values (surface gravity, atomic weight, melting/boiling
+points, axial tilt) live in the **infobox**, which the `extracts` API never
+returns at any prose depth — so faithfulness on those didn't climb. Meanwhile the
+fuller prose invited more claims (some ungrounded) and pushed two abstaining
+tasks into answering-and-failing: faithfulness 17/30 → 16/32, tasks-pass 22 → 18.
+Takeaway: prose depth is the wrong lever for infobox facts — the next attempt
+should fetch structured/infobox data, not more prose.
 
 **Held-out** — run once, at the end, as an overfitting check: _TBD._
 
