@@ -206,14 +206,27 @@ re-pin, re-run the baseline, and note it in the change log.
 
 ### Hillclimb results
 
-The suite is frozen before the climb. One change at a time, per-dimension effect
-recorded. `kind` marks each row — grader-change rows recalibrate the instrument,
-so scores are not directly comparable across them.
+Suite + baseline prompt frozen at tag `eval-freeze-1`. One change at a time,
+per-dimension effect recorded. `kind` marks each row — grader-change rows
+recalibrate the instrument, so scores are not directly comparable across them.
+Cells are per-dimension pass rate over the dev suite (passes / applicable).
 
-**Baseline** — no-retrieval reference (agent answers from memory, Wikipedia
-disabled). Faithfulness is **0 by definition** here: with no retrieved text,
-nothing can be supported. The baseline exists to show what the other dimensions
-look like ungrounded. _TBD (run once the suite is frozen)._
+**Baseline** — no-retrieval floor (tools off, frozen `BASELINE_SYSTEM_PROMPT`,
+answers from memory). Run `20260613T193052Z`, dev suite, 2/38 tasks pass all
+declared dimensions.
+
+| dimension | faithfulness | completeness | correctness | attribution | calibration |
+|---|---|---|---|---|---|
+| baseline | 0/32 | 26/26 | 32/32 | 0/26 | 28/32 |
+
+Faithfulness and attribution are **0 by definition** (nothing retrieved → nothing
+supported, nothing cited). Correctness/completeness are high because the bare
+model knows these facts. Calibration's 4 misses are unanswerables the bare model
+confabulated instead of refusing (future World Cup, future language, Socrates'
+exact height, Caesar's dream). The climb's job: lift faithfulness + attribution
+with real retrieval while holding correctness/completeness.
+
+**The climb** (one row per change):
 
 | date | change | kind | faithfulness | completeness | correctness | attribution | calibration |
 |------|--------|------|--------------|--------------|-------------|-------------|-------------|
