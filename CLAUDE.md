@@ -54,8 +54,10 @@ The `evals/` package follows Anthropic's eval nomenclature
 (https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents):
 - **`evals/suite.jsonl`** — the **suite**: one **task** (JSON object) per line.
   Each task has a `category` (one of `CATEGORIES` in `harness.py`: factual,
-  multi_hop, disambiguation, unanswerable, adversarial); the report breaks
-  faithfulness down per category and `--category` filters to one.
+  multi_hop, disambiguation, unanswerable, adversarial, retrieval_gap); the
+  report breaks faithfulness down per category and `--category` filters to one.
+  `retrieval_gap` (answer on Wikipedia but outside the agent's extract) is where
+  faithfulness and completeness diverge — its grading is a phase-2 concern.
 - **`evals/graders.py`** — **code-based graders** (recall, citation, refusal) and
   one **model-based grader** (faithfulness, LLM-as-judge against a rubric).
 - **`evals/harness.py`** — runs each task as a **trial**, captures the

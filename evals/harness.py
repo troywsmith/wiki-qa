@@ -26,7 +26,9 @@ console = Console()
 DEFAULT_SUITE = Path(__file__).parent / "suite.jsonl"
 
 # Task categories — each probes a distinct way a grounded QA agent fails.
-CATEGORIES = ("factual", "multi_hop", "disambiguation", "unanswerable", "adversarial")
+# retrieval_gap: the answer IS on Wikipedia but outside the extract the agent
+# pulled — faithfulness and completeness diverge here (see evals docs / phase 2).
+CATEGORIES = ("factual", "multi_hop", "disambiguation", "unanswerable", "adversarial", "retrieval_gap")
 
 
 def load_suite(path: Path) -> list[dict[str, Any]]:

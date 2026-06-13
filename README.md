@@ -85,6 +85,11 @@ report breaks faithfulness down per category:
 - `disambiguation` — ambiguous entity/sense (retrieval precision)
 - `unanswerable` — not on Wikipedia / private / future (honesty, correct refusal)
 - `adversarial` — false-premise or bait questions (hallucination resistance)
+- `retrieval_gap` — answer is on Wikipedia but outside the extract the agent
+  pulled (e.g. not in the lead). Distinct from `unanswerable`: the info is
+  *obtainable*, so a faithful refusal here is really a retrieval miss. This is
+  where faithfulness and completeness diverge — the yardstick for improving the
+  agent's retrieval depth.
 
 ## Deploy (Vercel)
 
@@ -110,4 +115,5 @@ Deliberately deferred until the eval suite is fully built out:
   past its thin retrieved extracts and sometimes answers without reading an
   article. Candidate fixes: require reading before answering, and retrieve fuller
   article text. Parked until the eval suite is finalized so we can measure the
-  impact rather than guess.
+  impact rather than guess — the `retrieval_gap` category is the yardstick (those
+  tasks should flip from refusal to correct answers once retrieval improves).
