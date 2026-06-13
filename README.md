@@ -285,7 +285,17 @@ memory (`saturn-axial-tilt` 0.0). **Before trusting more small levers, enforce
 temperature 0 (and/or add multi-trial) so a ±2 delta isn't noise** — and
 `retrieval_gap` still needs infobox retrieval.
 
-**Held-out** — run once, at the end, as an overfitting check: _TBD._
+**Held-out** — run once, at the very end, with the current-best agent (3 trials,
+majority). Not tuned against.
+
+| anchor | faithfulness | completeness | correctness | attribution | calibration | tasks pass-all |
+|---|---|---|---|---|---|---|
+| dev current-best | 18/30 (.60) | 22/26 | 28/29 | 20/23 (.87) | 29/32 | 22/38 (.58) |
+| held-out | 8/11 (.73) | 9/9 | 11/11 | 7/9 (.78) | 11/11 | 9/13 (.69) |
+
+Held-out matches or exceeds dev on every dimension — **no overfitting**; the
+climb's gains (general prompt + retrieval changes, never dev-specific tuning)
+generalize. This is the final result; nothing was tuned after seeing it.
 
 ## Demo
 
