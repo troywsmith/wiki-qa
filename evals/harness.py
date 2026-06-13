@@ -155,6 +155,8 @@ async def run_phase(settings: Any, tasks: list[dict[str, Any]], suite_path: Path
     run_dir = RUNS_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
 
+    # A filtered run is a scratch slice for tuning — never a loggable dev row.
+    partial = bool(args.category or args.task)
     meta = {
         "run_id": run_id,
         "timestamp": stamp,
@@ -168,7 +170,8 @@ async def run_phase(settings: Any, tasks: list[dict[str, Any]], suite_path: Path
             "temperature": PINNED_TEMPERATURE,
             "trials": 1,
         },
-        "kind": "baseline" if args.baseline else args.kind,  # for the hillclimb table
+        "partial": partial,  # True if sliced/holdout — excluded from the comparison table
+        "kind": "scratch" if partial else ("baseline" if args.baseline else args.kind),
         "note": args.note,   # one-line description of what changed
     }
     if args.baseline:
@@ -300,6 +303,15 @@ def _cell(passed: int, n: int) -> str:
     return f"[{color}]{passed}/{n}[/{color}]"
 
 
+def _scratch_banner(run_dir: Path) -> None:
+    """Loudly flag a partial/scratch run so its numbers are never logged as a row."""
+    meta_path = run_dir / "meta.json"
+    if not meta_path.exists():
+        return
+    if json.loads(meta_path.read_text()).get("partial"):
+        console.print("\n[bold yellow]⚠ PARTIAL / SCRATCH run — tuning only. Do NOT log these numbers as a row; only a full frozen dev-suite run produces a real row.[/bold yellow]")
+
+
 def report(scored: list[dict[str, Any]]) -> None:
     cats = sorted({s["category"] for s in scored}, key=lambda c: CATEGORIES.index(c) if c in CATEGORIES else 99)
 
@@ -354,6 +366,14 @@ async def main_async(args: argparse.Namespace) -> None:
             console.print(f"[yellow]warning: unknown categories {sorted(unknown)}[/yellow]")
         if args.category:
             tasks = [t for t in tasks if t.get("category") == args.category]
+        if args.task:
+            ids = {t.strip() for t in args.task.split(",") if t.strip()}
+            tasks = [t for t in tasks if t["id"] in ids]
+        if not tasks:
+            console.print("[red]no tasks matched the filter.[/red]")
+            raise SystemExit(1)
+        if args.category or args.task:
+            console.print("[yellow]SCRATCH SLICE (partial) — for tuning only, NOT a loggable row.[/yellow]")
         run_dir = await run_phase(settings, tasks, suite_path, args)
     else:  # score
         run_dir = Path(args.run) if args.run else _latest_run()
@@ -362,6 +382,7 @@ async def main_async(args: argparse.Namespace) -> None:
     if args.mode in ("score", "all"):
         scored = await score_run(settings, run_dir, regrade_code=args.regrade_code)
         report(scored)
+        _scratch_banner(run_dir)
 
 
 def main() -> None:
@@ -370,7 +391,8 @@ def main() -> None:
     parser.add_argument("--suite", default=str(DEFAULT_SUITE), help="Dev suite path (run).")
     parser.add_argument("--holdout", action="store_true", help="Use the held-out slice (only at the very end).")
     parser.add_argument("--baseline", action="store_true", help="No-retrieval floor: stripped prompt, no tools. Run once.")
-    parser.add_argument("--category", choices=CATEGORIES, help="Only run tasks in this category.")
+    parser.add_argument("--category", choices=CATEGORIES, help="Only run tasks in this category (marks the run scratch).")
+    parser.add_argument("--task", help="Comma-separated task id(s) to run a slice (marks the run scratch).")
     parser.add_argument("--run", help="Run dir to score (default: latest under evals/runs/).")
     parser.add_argument("--regrade-code", action="store_true", help="Re-score reusing cached judge verdicts; only recompute code graders (no API).")
     parser.add_argument("--note", default="", help="One-line description of what changed (recorded in meta.json).")
