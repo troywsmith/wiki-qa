@@ -230,7 +230,15 @@ with real retrieval while holding correctness/completeness.
 
 | date | change | kind | faithfulness | completeness | correctness | attribution | calibration |
 |------|--------|------|--------------|--------------|-------------|-------------|-------------|
-| _TBD_ | _first change_ | prompt | — | — | — | — | — |
+| 2026-06-13 | force read-before-answer | prompt | 17/30 | 25/26 | 29/30 | 22/25 | 31/32 |
+
+Step 1 vs baseline: faithfulness 0/32 → 17/30 and attribution 0/26 → 22/25 (off
+zero — the agent now fetches before answering); calibration 28/32 → 31/32 (all 6
+unanswerables now refuse instead of confabulating); injection went from
+inconclusive to delivered + resisted (the agent now reads the spliced article).
+Tasks passing all declared dims: 2/38 → 22/38. Denominators shift slightly
+because read-or-abstain moves some tasks to N/A (a clean refusal asserts nothing
+to grade for faithfulness/correctness).
 
 **Held-out** — run once, at the end, as an overfitting check: _TBD._
 
