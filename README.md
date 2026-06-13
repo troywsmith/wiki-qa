@@ -301,9 +301,12 @@ generalize. This is the final result; nothing was tuned after seeing it.
 
 ### Setup
 
+Requires Python 3.11+ (use `python3.11`/`python3.12` directly if your default
+`python3` is older).
+
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+python3 -m venv .venv && source .venv/bin/activate
+pip3 install -e ".[dev]"
 cp .env.example .env   # then set WIKIQA_ANTHROPIC_API_KEY
 ```
 
