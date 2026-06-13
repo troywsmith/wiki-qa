@@ -53,6 +53,23 @@ pytest            # all tests (HTTP is mocked; no network or API key needed)
 pytest tests/test_wikipedia.py::test_search_parses_hits
 ```
 
+## Evals
+
+A standalone suite that runs the agent over a dataset and scores it. The
+**north-star metric is faithfulness** — is every claim in the answer supported
+by the Wikipedia text the agent actually retrieved? An answer given with no
+retrieved source text scores 0 (ungrounded), not a pass. Recall, citation, and
+refusal are secondary checks. Faithfulness is graded by an LLM judge; the rest
+are deterministic. Runs live (real Wikipedia + Claude) and needs an API key.
+
+```bash
+python -m evals.runner                       # run evals/dataset.jsonl
+python -m evals.runner --dataset my.jsonl --json results.json
+```
+
+Each dataset line: `{"id", "question", "key_facts": [...],
+"expected_sources": [...], "should_refuse": bool}`.
+
 ## Deploy (Vercel)
 
 Vercel detects the FastAPI app via the `[tool.vercel] entrypoint` in
