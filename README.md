@@ -1,26 +1,19 @@
 # wiki-qa
 
-Wikipedia-grounded question answering. A FastAPI service wraps a tool-calling
-Claude agent that searches and reads **live Wikipedia** at request time, then
-answers grounded in the fetched article text with a list of sources.
+Wikipedia-grounded question answering: a FastAPI service wrapping a tool-calling
+Claude agent that searches and reads **live Wikipedia** at request time and
+answers grounded in the retrieved text, with citations.
 
-## How it works
+## Overview
 
-1. `POST /api/ask` with a question.
-2. The agent (Claude with tool use) decides when to call `search_wikipedia`
-   and `get_article`, looping until it can answer.
-3. The model answers strictly from retrieved text and lists the article titles
-   it relied on. Articles actually fetched are returned as structured `sources`.
+### What the app does
 
-No database, no indexing — retrieval is always current via the MediaWiki API.
+Answers a question by retrieving relevant Wikipedia article(s) live, then
+answering strictly from the retrieved text and citing the articles used. No
+database or index — retrieval is always current via the MediaWiki API.
 
-## Scope
+### In scope
 
-The contract for what wiki-qa does. **A task is only added to the eval suite if
-it maps to an in-scope requirement and its expected behavior; otherwise flag it
-rather than adding it.**
-
-**In scope**
 - Answer factual questions grounded in live Wikipedia text.
 - Retrieve relevant article(s) via search, then fetch; combine across articles when needed.
 - Resolve ambiguous entities to the intended sense, or surface the ambiguity.
@@ -29,7 +22,8 @@ rather than adding it.**
 - Cite the articles actually used.
 - Treat retrieved text as data, not instructions.
 
-**Out of scope** (with reason)
+### Out of scope (with reason)
+
 - Non-Wikipedia / open-web knowledge — Wikipedia is the single source of truth; out-of-source facts are refused, not answered.
 - Toxicity / bias / PII / jailbreak moderation — near-zero surface for public-encyclopedia QA; the only live safety axis is prompt injection via retrieved content, which is in scope.
 - Opinion / advice / subjective questions.
@@ -37,110 +31,21 @@ rather than adding it.**
 - Multi-turn dialogue — the unit is one question to one grounded answer.
 - Recency reasoning beyond what the source says.
 
-**Expected behavior per category**
-- `factual` — retrieve the article, answer from it, cite it.
-- `multi_hop` — use 2+ articles, synthesize only from retrieved text, cite all.
-- `disambiguation` — answer the intended sense or surface the ambiguity; never answer the wrong sense.
-- `unanswerable` — refuse honestly, no guessing.
-- `adversarial` — reject the false premise; don't produce a fluent wrong answer.
-- `retrieval_gap` — retrieve deeper or abstain; never answer from memory. A refusal here is a retrieval miss, not honesty — where faithfulness and completeness diverge.
+## Architecture
 
-## Setup
+### High-level diagram
 
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-cp .env.example .env   # set WIKIQA_ANTHROPIC_API_KEY
+```mermaid
+flowchart LR
+    Q[Question] --> A[Agent loop]
+    A -->|tool call| S[search_wikipedia]
+    A -->|tool call| G[get_article]
+    S --> A
+    G --> A
+    A --> R[Answer + sources]
 ```
 
-## CLI (fastest way to iterate)
-
-The `wiki-qa` command calls the agent in-process (no server) and, with `-v`,
-streams each Wikipedia search/read as it happens — handy for tuning prompts and
-tools.
-
-```bash
-wiki-qa "Who designed the first compiler?"   # one-shot
-wiki-qa -v "..."                              # show the agent's tool trace
-wiki-qa                                       # interactive session (Ctrl-D to quit)
-```
-
-## Run as a server
-
-```bash
-uvicorn wikiqa.main:app --reload
-```
-
-```bash
-curl -s localhost:8000/api/ask \
-  -H 'content-type: application/json' \
-  -d '{"question": "Who designed the first compiler?"}' | jq
-```
-
-## Test
-
-```bash
-pytest            # all tests (HTTP is mocked; no network or API key needed)
-pytest tests/test_wikipedia.py::test_search_parses_hits
-```
-
-## Evals
-
-Terminology follows Anthropic's
-[Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents):
-the **harness** runs each **task** in the **suite** as a **trial**, captures the
-**transcript** (the Wikipedia text the agent retrieved + its **outcome**), and
-applies **graders**.
-
-Each task is graded along the **quality dimensions** it declares. **Faithfulness
-is the north star** — is every claim in the outcome supported by the text the
-agent actually retrieved? An answer given with no retrieved source text grades 0
-(ungrounded), not a pass. The five dimensions:
-
-- **faithfulness** — claims supported by *retrieved* text (model-based, vs context)
-- **correctness** — outcome asserts nothing contradicting the reference (precision)
-- **completeness** — outcome covers the reference's key info (recall); a refusal
-  scores 0 here, which is how `retrieval_gap` surfaces
-- **attribution** — expected source articles were cited (code-based)
-- **calibration** — refuses iff it should (code-based)
-
-correctness + completeness come from one **reference-based** judge call against
-the task's `reference_answer`. Runs live (real Wikipedia + Claude); needs an API
-key.
-
-```bash
-python -m evals.harness                       # run the dev suite (evals/suite.jsonl)
-python -m evals.harness --category adversarial # run one category
-python -m evals.harness --json records.json    # write full records as JSON
-python -m evals.harness --holdout              # run the held-out slice (ONLY at the very end)
-```
-
-The suite is the spec: the dev set (`evals/suite.jsonl`) has ~6 tasks per
-category so every failure mode has real coverage. A held-out slice
-(`evals/holdout.jsonl`, ~2 per category) is **never loaded by default** — it is
-run once, at the end, via `--holdout`, to check we didn't overfit the dev set
-while iterating.
-
-Each task line: `{"id", "category", "question", "dimensions": [...],
-"reference_answer": "...", "expected_sources": [...], "should_refuse": bool}`.
-A task is only graded on the dimensions it lists; `reference_answer` is required
-for `correctness`/`completeness`.
-
-Tasks are grouped into **categories**, each probing a distinct failure mode; the
-report breaks faithfulness down per category:
-
-- `factual` — single fact, one article (baseline competence)
-- `multi_hop` — answer needs 2+ articles combined (retrieval + synthesis)
-- `disambiguation` — ambiguous entity/sense (retrieval precision)
-- `unanswerable` — not on Wikipedia / private / future (honesty, correct refusal)
-- `adversarial` — false-premise or bait questions (hallucination resistance)
-- `retrieval_gap` — answer is on Wikipedia but outside the extract the agent
-  pulled (e.g. not in the lead). Distinct from `unanswerable`: the info is
-  *obtainable*, so a faithful refusal here is really a retrieval miss. This is
-  where faithfulness and completeness diverge — the yardstick for improving the
-  agent's retrieval depth.
-
-## Design decisions
+### Design decisions
 
 The choices that govern the agent and eval, each with its one-line tradeoff.
 These are the locked decisions we build and hillclimb toward; where current code
@@ -153,54 +58,136 @@ diverges, closing the gap is hillclimbing work, not a doc change.
 - **Intro-only extracts, escalation gated on eval evidence** — cheap and usually enough; misses buried facts (the `retrieval_gap` bet) until evidence justifies expanding.
 - **Model choice** — a mid-tier answerer so grounding failures stay visible, and a stronger, different judge to decorrelate self-preference.
 
-### How to read the output
+## Evals
 
-- **Dimensions**: faithfulness (claims supported by retrieved text), correctness
-  (nothing contradicting the reference), completeness (covers the reference),
-  attribution (right sources cited), calibration (refuses iff it should).
-- **Per subset, not blended**: scores are reported per category and per
-  dimension, never as one number — a blended score hides which failure mode moved.
-- **Good vs failure**: a good result is high faithfulness with correctness and
-  completeness both high on answerable tasks. A failure is high correctness but
-  low faithfulness (right answer, ungrounded), or a `retrieval_gap` task scoring
-  completeness 0 (abstained on an obtainable answer).
+### Approach
+
+Eval-driven development, in this project's order. (Terminology follows Anthropic's
+[Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents):
+a **harness** runs each **task** in the **suite** as a **trial**, captures the
+**transcript**/**outcome**, and applies **graders**.)
+
+1. **Lock the spec** — scope, grading taxonomy (dimensions), and task categories.
+2. **Build the suite out first** — several tasks per category so every failure
+   mode has real coverage. The dataset is the spec; a held-out slice is set aside
+   and left unseen.
+3. **Validate the graders** — confirm each dimension measures what we intend
+   before trusting the scores.
+4. **Freeze the suite, then hillclimb** — change one thing at a time on the
+   agent/prompt and record the per-dimension effect.
+5. **Run the held-out slice once, at the end**, as an overfitting check.
+
+Two rules: don't hillclimb before the suite is built out (tuning against a thin
+suite fits noise); keep prompt changes separate from grader changes so behavior
+improvements and instrument calibration never blur.
+
+### Grading taxonomy (dimensions)
+
+Each task is graded only on the dimensions it declares. **Faithfulness is the
+north star.**
+
+- **faithfulness** — every claim supported by the *retrieved* text (model-based, vs context). An answer with no retrieved source text scores 0.
+- **correctness** — asserts nothing contradicting the reference (precision; model-based vs `reference_answer`).
+- **completeness** — covers the reference's key info (recall; same judge call). A refusal scores 0 — how `retrieval_gap` surfaces.
+- **attribution** — expected source articles were cited (code-based).
+- **calibration** — refuses iff it should (code-based).
+
+correctness + completeness come from one reference-based judge call; the other
+three are independent.
+
+### Task categories
+
+Dev tasks live in `evals/suite.jsonl` (~6 per category); a held-out slice lives in
+`evals/holdout.jsonl` (~2 per category) and is **never loaded by default**.
+
+| Category | Expected behavior |
+|---|---|
+| `factual` | retrieve the article, answer from it, cite it |
+| `multi_hop` | use 2+ articles, synthesize only from retrieved text, cite all |
+| `disambiguation` | answer the intended sense or surface the ambiguity; never the wrong sense |
+| `unanswerable` | refuse honestly, no guessing |
+| `adversarial` | reject the false premise; don't produce a fluent wrong answer |
+| `retrieval_gap` | retrieve deeper or abstain; never answer from memory (a refusal here is a retrieval miss, not honesty — where faithfulness and completeness diverge) |
+
+Task-line schema: `{"id", "category", "question", "dimensions": [...],
+"reference_answer": "...", "expected_sources": [...], "should_refuse": bool}`.
+A task is graded only on the dimensions it lists; `reference_answer` is required
+for `correctness`/`completeness`.
+
+Reading the harness output: scores are reported **per category and per
+dimension, never blended** — so you can see which failure mode moved. A good
+result is high faithfulness with correctness and completeness high on answerable
+tasks; a telltale failure is high correctness but low faithfulness (right answer,
+ungrounded).
+
+### Hillclimb results
+
+The suite is frozen before the climb. One change at a time, per-dimension effect
+recorded. `kind` marks each row — grader-change rows recalibrate the instrument,
+so scores are not directly comparable across them.
+
+**Baseline** — no-retrieval reference (agent answers from memory, Wikipedia
+disabled): _TBD (run once the suite is frozen)._
+
+| date | change | kind | faithfulness | completeness | correctness | attribution | calibration |
+|------|--------|------|--------------|--------------|-------------|-------------|-------------|
+| _TBD_ | _first change_ | prompt | — | — | — | — | — |
+
+**Held-out** — run once, at the end, as an overfitting check: _TBD._
+
+## Demo
+
+_TBD — short walkthrough video (asking a question, streaming tool calls, grounded answer)._
+
+## Quickstart
+
+### Setup
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+cp .env.example .env   # then set WIKIQA_ANTHROPIC_API_KEY
+```
+
+Configuration: all settings are `WIKIQA_`-prefixed env vars — see `.env.example`.
+
+### Ask a question
+
+```bash
+wiki-qa -v "Who designed the first compiler?"   # in-process CLI, streams tool calls
+# or run the API: `uvicorn wikiqa.main:app --reload`, then POST /api/ask
+```
+
+### Run the tests
+
+```bash
+pytest
+```
+
+Tests mock all HTTP — **no API key, no network.**
+
+### Run the eval suite
+
+```bash
+python -m evals.harness                  # dev suite
+python -m evals.harness --holdout        # held-out slice (only at the very end)
+```
+
+The eval suite runs **live** — real Wikipedia and Claude calls — so it needs
+`WIKIQA_ANTHROPIC_API_KEY`.
 
 ## Caveats / limitations
 
 What the numbers don't tell you:
-- **Single-trial variance** — even at temperature 0, runs are not bit-for-bit
-  deterministic; one-trial scores carry variance (multi-trial pass@k is parked).
-- **Grader blind spots** — the code-based graders are approximate (e.g.
-  calibration uses keyword refusal-detection; attribution is title substring
-  matching) and can mis-grade edge cases.
-- **Small held-out slice** — ~2 tasks per category; a coarse overfitting check,
-  not a precise generalization estimate.
-- **No change→result table yet** — the per-change iteration log arrives once we
-  freeze the suite and start hillclimbing.
 
-## Deploy (Vercel)
+- **Single-trial variance** — even at temperature 0, runs are not bit-for-bit deterministic; one-trial scores carry variance (multi-trial pass@k is parked).
+- **Grader blind spots** — the code-based graders are approximate (e.g. calibration uses keyword refusal-detection; attribution is title substring matching) and can mis-grade edge cases.
+- **Small held-out slice** — ~2 tasks per category; a coarse overfitting check, not a precise generalization estimate.
+- **Hillclimb table is empty** — the per-change log fills in once we freeze the suite and start climbing.
 
-Vercel detects the FastAPI app via the `[tool.vercel] entrypoint` in
-`pyproject.toml` and routes all requests to it on Fluid Compute. Set the
-`WIKIQA_ANTHROPIC_API_KEY` environment variable in the project settings
-(or `vercel env add WIKIQA_ANTHROPIC_API_KEY`) before deploying.
+## Next steps
 
-## Configuration
+Deferred until we begin hillclimbing:
 
-All settings are environment variables prefixed `WIKIQA_` (see `.env.example`):
-`ANTHROPIC_API_KEY`, `MODEL`, `MAX_AGENT_STEPS`, `MAX_TOKENS`,
-`WIKIPEDIA_LANG`, `REQUEST_TIMEOUT`.
-
-## Next steps (parked)
-
-Deliberately deferred until the eval suite is fully built out:
-
-- **Multi-trial metrics (pass@k / pass^k).** Run each task as multiple trials and
-  report pass@k / pass^k for stability against model variance. Parked until the
-  suite has enough tasks to make repeated trials worthwhile.
-- **Application / prompt grounding improvements.** The agent currently over-claims
-  past its thin retrieved extracts and sometimes answers without reading an
-  article. Candidate fixes: require reading before answering, and retrieve fuller
-  article text. Parked until the eval suite is finalized so we can measure the
-  impact rather than guess — the `retrieval_gap` category is the yardstick (those
-  tasks should flip from refusal to correct answers once retrieval improves).
+- **Multi-trial metrics (pass@k / pass^k).** Run each task as multiple trials and report pass@k / pass^k for stability against model variance.
+- **Application / prompt grounding improvements.** The agent over-claims past its thin retrieved extracts and sometimes answers without reading an article. Candidate fixes: require reading before answering, retrieve fuller article text. The `retrieval_gap` category is the yardstick — those tasks should flip from refusal to correct answers once retrieval improves.
