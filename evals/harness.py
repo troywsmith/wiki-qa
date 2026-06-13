@@ -24,6 +24,7 @@ from . import graders
 
 console = Console()
 DEFAULT_SUITE = Path(__file__).parent / "suite.jsonl"
+HOLDOUT_SUITE = Path(__file__).parent / "holdout.jsonl"
 
 # Task categories — each probes a distinct way a grounded QA agent fails.
 # retrieval_gap: the answer IS on Wikipedia but outside the extract the agent
@@ -183,7 +184,14 @@ async def main_async(args: argparse.Namespace) -> None:
         console.print("[red]WIKIQA_ANTHROPIC_API_KEY is not set.[/red]")
         raise SystemExit(1)
 
-    tasks = load_suite(Path(args.suite))
+    # The held-out slice is only ever loaded with --holdout, and never alongside
+    # the dev suite — keep it unseen during iteration (see eval methodology).
+    if args.holdout:
+        suite_path = HOLDOUT_SUITE
+        console.print("[yellow]running HELD-OUT slice — only do this at the very end.[/yellow]")
+    else:
+        suite_path = Path(args.suite)
+    tasks = load_suite(suite_path)
 
     unknown = {t.get("category", "uncategorized") for t in tasks} - set(CATEGORIES)
     if unknown:
@@ -217,6 +225,7 @@ async def main_async(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(prog="evals", description="Run the wiki-qa evaluation suite.")
     parser.add_argument("--suite", default=str(DEFAULT_SUITE), help="Path to a .jsonl suite of tasks.")
+    parser.add_argument("--holdout", action="store_true", help="Run the held-out slice instead (only at the very end).")
     parser.add_argument("--category", choices=CATEGORIES, help="Only run tasks in this category.")
     parser.add_argument("--json", help="Optional path to write full records as JSON.")
     asyncio.run(main_async(parser.parse_args()))

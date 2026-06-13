@@ -78,10 +78,17 @@ the task's `reference_answer`. Runs live (real Wikipedia + Claude); needs an API
 key.
 
 ```bash
-python -m evals.harness                       # run evals/suite.jsonl
+python -m evals.harness                       # run the dev suite (evals/suite.jsonl)
 python -m evals.harness --category adversarial # run one category
-python -m evals.harness --suite my.jsonl --json records.json
+python -m evals.harness --json records.json    # write full records as JSON
+python -m evals.harness --holdout              # run the held-out slice (ONLY at the very end)
 ```
+
+The suite is the spec: the dev set (`evals/suite.jsonl`) has ~6 tasks per
+category so every failure mode has real coverage. A held-out slice
+(`evals/holdout.jsonl`, ~2 per category) is **never loaded by default** — it is
+run once, at the end, via `--holdout`, to check we didn't overfit the dev set
+while iterating.
 
 Each task line: `{"id", "category", "question", "dimensions": [...],
 "reference_answer": "...", "expected_sources": [...], "should_refuse": bool}`.
