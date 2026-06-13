@@ -16,6 +16,10 @@ def test_classify_decision():
     assert graders.classify_decision({"answer": "Canberra is the capital."}) == "answer"
     assert graders.classify_decision({"answer": ""}) == "refusal"
     assert graders.classify_decision({"answer": "The sources do not contain the answer."}) == "refusal"
+    # broadened abstention phrasing (was mis-scored as answer)
+    assert graders.classify_decision({"answer": "The article does not mention Caesar's dream."}) == "refusal"
+    # a premise rejection is an ANSWER now, not a refusal (graded by correctness)
+    assert graders.classify_decision({"answer": "That is a myth; Napoleon was of average height."}) == "answer"
 
 
 def test_attribution_recall_and_normalization():

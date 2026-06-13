@@ -35,7 +35,7 @@ from wikiqa.agent import Agent
 from wikiqa.config import get_settings
 from wikiqa.wikipedia import WikipediaClient
 
-from . import graders
+from . import digest, graders
 
 console = Console()
 HERE = Path(__file__).parent
@@ -224,7 +224,9 @@ async def score_run(settings: Any, run_dir: Path) -> list[dict[str, Any]]:
             scored.append(await score_record(client, settings.judge_model, record))
 
     (run_dir / "scores.json").write_text(json.dumps({"run_id": run_dir.name, "scored": scored}, indent=2, ensure_ascii=False))
-    console.print(f"[dim]wrote scores.json → {run_dir}[/dim]")
+    # Write-also: a plain-text digest derived from records (like scores), for skimming.
+    (run_dir / "digest.txt").write_text(digest.build_text(records, scored) + "\n")
+    console.print(f"[dim]wrote scores.json + digest.txt → {run_dir}[/dim]")
     return scored
 
 

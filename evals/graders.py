@@ -24,6 +24,9 @@ from typing import Any
 
 from anthropic import AsyncAnthropic
 
+# Genuine abstention phrasings only. NOTE: premise-rejection phrases ("is a myth",
+# "premise is false", …) are deliberately NOT here — an adversarial correction is an
+# answer to be graded by correctness, not a refusal.
 _REFUSAL_MARKERS = (
     "could not find",
     "couldn't find",
@@ -31,21 +34,26 @@ _REFUSAL_MARKERS = (
     "does not contain",
     "doesn't contain",
     "not contain the answer",
+    "does not mention",
+    "doesn't mention",
+    "do not mention",
+    "no mention of",
+    "not mentioned",
+    "does not say",
+    "doesn't say",
+    "does not state",
+    "doesn't state",
+    "does not specify",
     "no information",
     "unable to",
     "couldn't reach",
     "i don't have",
+    "i do not have",
     "cannot answer",
     "can't answer",
     "i can't help",
     "i cannot help",
     "no reliable",
-    "premise is false",
-    "premise is incorrect",
-    "is a myth",
-    "is a misconception",
-    "no such",
-    "not the case",
 )
 
 
