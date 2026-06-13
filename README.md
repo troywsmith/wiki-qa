@@ -297,10 +297,6 @@ Held-out matches or exceeds dev on every dimension — **no overfitting**; the
 climb's gains (general prompt + retrieval changes, never dev-specific tuning)
 generalize. This is the final result; nothing was tuned after seeing it.
 
-## Demo
-
-_TBD — short walkthrough video (asking a question, streaming tool calls, grounded answer)._
-
 ## Quickstart
 
 ### Setup
