@@ -22,7 +22,19 @@ pip install -e ".[dev]"
 cp .env.example .env   # set WIKIQA_ANTHROPIC_API_KEY
 ```
 
-## Run locally
+## CLI (fastest way to iterate)
+
+The `wiki-qa` command calls the agent in-process (no server) and, with `-v`,
+streams each Wikipedia search/read as it happens — handy for tuning prompts and
+tools.
+
+```bash
+wiki-qa "Who designed the first compiler?"   # one-shot
+wiki-qa -v "..."                              # show the agent's tool trace
+wiki-qa                                       # interactive session (Ctrl-D to quit)
+```
+
+## Run as a server
 
 ```bash
 uvicorn wikiqa.main:app --reload

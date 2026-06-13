@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from anthropic import AsyncAnthropic
 
@@ -31,8 +31,15 @@ class Agent:
             return await self.wiki.get_article(args["title"])
         return {"error": f"unknown tool: {name}"}
 
-    async def answer(self, question: str) -> dict[str, Any]:
-        """Run the tool loop and return {answer, sources, steps}."""
+    async def answer(
+        self, question: str, on_event: Callable[[dict[str, Any]], None] | None = None
+    ) -> dict[str, Any]:
+        """Run the tool loop and return {answer, sources, steps}.
+
+        on_event, if given, is called with {"type": "tool_call"|"tool_result", ...}
+        as the agent works — used by the CLI to stream progress.
+        """
+        emit = on_event or (lambda _event: None)
         messages: list[dict[str, Any]] = [{"role": "user", "content": question}]
         sources: list[dict[str, str]] = []
 
@@ -55,7 +62,9 @@ class Agent:
             for block in resp.content:
                 if block.type != "tool_use":
                     continue
+                emit({"type": "tool_call", "name": block.name, "input": block.input})
                 result = await self._dispatch_tool(block.name, block.input)
+                emit({"type": "tool_result", "name": block.name, "result": result})
                 if block.name == "get_article" and isinstance(result, dict) and result.get("extract"):
                     sources.append({"title": result["title"], "url": result["url"]})
                 tool_results.append(
